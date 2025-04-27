@@ -24,6 +24,8 @@
             android:foregroundServiceType="specialUse"
             android:enabled="true"
             android:stopWithTask="false">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="This app maintains persistent SOCKS proxy connections that must remain active while in background. Android requires foreground service for long-running network operations that exceed background execution limits."/>
             <intent-filter>
                 <action android:name="net.isaeff.android.asproxy.SocksForegroundService" />
             </intent-filter>
