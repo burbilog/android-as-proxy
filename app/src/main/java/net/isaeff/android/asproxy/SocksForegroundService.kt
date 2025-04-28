@@ -44,9 +44,10 @@ class SocksForegroundService : Service() {
             return START_NOT_STICKY
         }
 
-        // Stub: start jsocks proxy here
+        // Stub: start proxy here
         try {
             startJsocks()
+            startSSHtunnel()
             AAPLog.append("Socks proxy started")
         } catch (e: Exception) {
             AAPLog.append("Error starting socks proxy: ${e.message}")
@@ -61,6 +62,7 @@ class SocksForegroundService : Service() {
         // Stub: stop jsocks proxy here
         try {
             stopJsocks()
+            stopSSHtunnel()
             AAPLog.append("Socks proxy stopped")
         } catch (e: Exception) {
             AAPLog.append("Error stopping socks proxy: ${e.message}")
@@ -112,8 +114,6 @@ class SocksForegroundService : Service() {
 
     private var socksServer: SocksServer? = null
 
-    private var socksServer: SocksServer? = null
-
     private fun startJsocks() {
         try {
             socksServer = SocksServer(1080).apply {
@@ -140,6 +140,16 @@ class SocksForegroundService : Service() {
             AAPLog.append("Failed to stop SOCKS proxy: ${e.message}")
             throw e
         }
+    }
+
+    private fun startSSHtunnel() {
+        // Stub: start SSH tunnel here
+        AAPLog.append("SSH tunnel started")
+    }
+
+    private fun stopSSHtunnel() {
+        // Stub: stop SSH tunnel here
+        AAPLog.append("SSH tunnel stopped")
     }
 }
 

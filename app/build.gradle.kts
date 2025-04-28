@@ -42,7 +42,8 @@ android {
 dependencies {
 
 
-    implementation(libs.jsocks)
+    //implementation(libs.jsocks)
+    implementation("com.github.bbottema:java-socks-proxy-server:4.1.2")
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
