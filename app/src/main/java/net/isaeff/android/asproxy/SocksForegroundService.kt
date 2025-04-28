@@ -177,6 +177,18 @@ class SocksForegroundService : Service() {
     private val sshTunnelManager = SSHTunnelManager()
 
     private fun startSSHtunnel() {
+        sshTunnelManager.onError = { errorMessage ->
+            AAPLog.append(errorMessage)
+            stopSelf()
+            // Show error toast
+            android.os.Handler(mainLooper).post {
+                android.widget.Toast.makeText(
+                    this,
+                    "SSH connection failed, see log",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+            }
+        }
         sshTunnelManager.startSSHTunnel()
         AAPLog.append("SFS: SSH tunnel started")
     }

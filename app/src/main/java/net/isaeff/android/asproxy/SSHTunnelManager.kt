@@ -6,6 +6,7 @@ import kotlinx.coroutines.*
 import java.util.Properties
 
 class SSHTunnelManager {
+    var onError: ((String) -> Unit)? = null
     private var session: Session? = null
     private var tunnelJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -71,6 +72,7 @@ class SSHTunnelManager {
                 withContext(Dispatchers.Main) {
                     AAPLog.append("SSH tunnel failed: ${e.message}")
                 }
+                onError?.invoke("SSH tunnel failed: ${e.message}")
                 e.printStackTrace()
             }
         }
