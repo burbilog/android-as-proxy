@@ -103,6 +103,7 @@ class SSHTunnelManager {
             withContext(Dispatchers.Main) {
                 AAPLog.append("Reconnection failed: ${e.message}")
             }
+            onError?.invoke("Reconnection failed: ${e.message}")
             // Wait before trying again
             delay(5000)
         }
