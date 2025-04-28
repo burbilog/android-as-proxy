@@ -19,6 +19,7 @@ class SocksForegroundService : Service() {
 
     private val CHANNEL_ID = "SocksProxyChannel"
     private val NOTIFICATION_ID = 1
+    private val ACTION_STOP_SERVICE = "net.isaeff.android.asproxy.action.STOP_SERVICE"
 
     override fun onBind(intent: Intent?): IBinder? {
         // Not a bound service
@@ -33,6 +34,13 @@ class SocksForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         AAPLog.append("Service onStartCommand()")
+
+        // Handle stop action from notification swipe or explicit stop
+        if (intent?.action == ACTION_STOP_SERVICE) {
+            AAPLog.append("Stop action received from notification")
+            stopSelf()
+            return START_NOT_STICKY
+        }
         
         // Create notification first
         val notification = createNotification()
@@ -69,6 +77,14 @@ class SocksForegroundService : Service() {
             stopSSHtunnel()
             sshTunnelManager.destroy()
             AAPLog.append("Socks proxy stopped")
+            // Show toast on service stop
+            android.os.Handler(mainLooper).post {
+                android.widget.Toast.makeText(
+                    this,
+                    "SOCKS proxy is stopped",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+            }
         } catch (e: Exception) {
             AAPLog.append("Error stopping socks proxy: ${e.message}")
         }
@@ -106,11 +122,21 @@ class SocksForegroundService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
+        // Intent to stop the service when notification is swiped away or dismissed
+        val stopIntent = Intent(this, SocksForegroundService::class.java).apply {
+            action = ACTION_STOP_SERVICE
+        }
+        val stopPendingIntent = PendingIntent.getService(
+            this, 0, stopIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Android As Proxy")
             .setContentText("SOCKS proxy is running")
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentIntent(pendingIntent)
+            .setDeleteIntent(stopPendingIntent) // Called when notification is dismissed/swiped
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setOngoing(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
