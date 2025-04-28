@@ -10,6 +10,10 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import org.bbottema.javasocksproxyserver.SocksServer;
+import com.jcraft.jsch.JSch
+import com.jcraft.jsch.Session
+import java.util.Properties
+
 
 class SocksForegroundService : Service() {
 
@@ -63,6 +67,7 @@ class SocksForegroundService : Service() {
         try {
             stopJsocks()
             stopSSHtunnel()
+            sshTunnelManager.destroy()
             AAPLog.append("Socks proxy stopped")
         } catch (e: Exception) {
             AAPLog.append("Error stopping socks proxy: ${e.message}")
@@ -143,14 +148,16 @@ class SocksForegroundService : Service() {
         }
     }
 
+    private val sshTunnelManager = SSHTunnelManager()
+
     private fun startSSHtunnel() {
-        // Stub: start SSH tunnel here
-        AAPLog.append("SSH tunnel started")
+        sshTunnelManager.startSSHTunnel()
+        AAPLog.append("SFS: SSH tunnel started")
     }
 
     private fun stopSSHtunnel() {
-        // Stub: stop SSH tunnel here
-        AAPLog.append("SSH tunnel stopped")
+        sshTunnelManager.stopSSHTunnel()
+        AAPLog.append("SFS: SSH tunnel stopped")
     }
 }
 

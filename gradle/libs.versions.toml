@@ -1,5 +1,7 @@
 [versions]
 agp = "8.9.2"
+javaSocksProxyServer = "4.1.2"
+jsch = "0.1.55"
 jsocks = "1.0.1-jitsi-1"
 kotlin = "2.0.21"
 coreKtx = "1.10.1"
@@ -12,6 +14,8 @@ composeBom = "2024.09.00"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+java-socks-proxy-server = { module = "com.github.bbottema:java-socks-proxy-server", version.ref = "javaSocksProxyServer" }
+jsch = { module = "com.jcraft:jsch", version.ref = "jsch" }
 jsocks = { module = "org.jitsi:jsocks", version.ref = "jsocks" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
