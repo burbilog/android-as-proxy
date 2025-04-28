@@ -134,7 +134,7 @@ fun MainScreen() {
         topBar = {
             TopAppBar(
                 title = {
-                    androidx.compose.foundation.layout.Row(
+                    Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
@@ -220,7 +220,7 @@ fun MainScreen() {
                     placeholder = { Text("username") },
                     modifier = Modifier.fillMaxWidth(),
                     keyboardOptions = KeyboardOptions(
-                        imeAction = androidx.compose.ui.text.input.ImeAction.Next
+                        imeAction = ImeAction.Next
                     )
                 )
 
