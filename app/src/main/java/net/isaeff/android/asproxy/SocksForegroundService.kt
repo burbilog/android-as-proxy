@@ -114,6 +114,7 @@ class SocksForegroundService : Service() {
 
     private var socksServer: SocksServer? = null
 
+    // TODO: listen on 127.0.0.1 for security, currently it listens on 0.0.0.0 by default
     private fun startJsocks() {
         try {
             socksServer = SocksServer(1080).apply {
