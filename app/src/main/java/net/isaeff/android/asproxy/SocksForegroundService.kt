@@ -110,14 +110,27 @@ class SocksForegroundService : Service() {
             .build()
     }
 
+    private var socksServer: SocksServer? = null
+
     private fun startJsocks() {
-        // TODO: Implement jsocks start logic
-        AAPLog.append("Stub: startJsocks called")
+        try {
+            socksServer = SocksServer(1080).start()
+            AAPLog.append("SOCKS proxy started on port 1080")
+        } catch (e: Exception) {
+            AAPLog.append("Failed to start SOCKS proxy: ${e.message}")
+            throw e
+        }
     }
 
     private fun stopJsocks() {
-        // TODO: Implement jsocks stop logic
-        AAPLog.append("Stub: stopJsocks called")
+        try {
+            socksServer?.stop()
+            socksServer = null
+            AAPLog.append("SOCKS proxy stopped")
+        } catch (e: Exception) {
+            AAPLog.append("Failed to stop SOCKS proxy: ${e.message}")
+            throw e
+        }
     }
 }
 
