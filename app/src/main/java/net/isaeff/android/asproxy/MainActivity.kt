@@ -109,7 +109,7 @@ fun MainScreen() {
     // Register and unregister broadcast receiver
     androidx.compose.runtime.DisposableEffect(Unit) {
         val filter = android.content.IntentFilter("net.isaeff.android.asproxy.SERVICE_STOPPED")
-        context.registerReceiver(serviceStoppedReceiver, filter)
+        context.registerReceiver(serviceStoppedReceiver, filter, android.Manifest.permission.BROADCAST_STICKY, null)
         onDispose {
             context.unregisterReceiver(serviceStoppedReceiver)
         }
