@@ -228,17 +228,14 @@ class SocksForegroundService : Service() {
             // The SOCKS server should listen on the local port (1080)
             // and forward requests through the SSH tunnel which is forwarding
             // the remote port (e.g., 10800) back to the local port (1080).
-            // This setup seems reversed. Typically, the SOCKS server listens locally (e.g., 1080)
+            // This setup is reversed. Typically, the SOCKS server listens locally (e.g., 1080)
             // and connects to the SSH server's *local* forwarding port (e.g., 10800 on localhost)
             // which is then forwarded *remotely* by SSH.
-            // Let's assume the current setup intends for the SOCKS server to listen on 1080
-            // and the SSH tunnel is set up for remote forwarding R 10800:localhost:1080.
-            // This means traffic arriving at the SSH server on port 10800 is forwarded to
+            // The traffic arriving at the SSH server on port 10800 is forwarded to
             // localhost:1080 *on the Android device*. The SOCKS server should listen on 1080
             // *on the Android device*.
-            // The current SSHTunnelManager sets up R remotePort:localhost:localPort (10800:localhost:1080).
-            // The SocksServer is created with port 1080. This seems correct for the intended flow.
-
+            // The current SSHTunnelManager sets up -R remotePort:localhost:localPort (10800:localhost:1080).
+            // The SocksServer is created with port 1080.
             socksServer = SocksServer(1080).apply {
                 start()
                 AAPLog.append("SOCKS proxy started on local port 1080")
