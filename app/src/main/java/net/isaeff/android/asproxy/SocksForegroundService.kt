@@ -163,8 +163,8 @@ class SocksForegroundService : Service() {
         }
         // Broadcast service stopped event - This is no longer strictly needed for UI update
         // but might be useful for other components. Keeping it for now.
-        val intent = Intent("net.isaeff.android.asproxy.SERVICE_STOPPED")
-        sendBroadcast(intent)
+        // val intent = Intent("net.isaeff.android.asproxy.SERVICE_STOPPED") // Removed broadcast
+        // sendBroadcast(intent) // Removed broadcast
 
         AAPLog.append("SocksForegroundService stopped")
     }
