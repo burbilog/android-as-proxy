@@ -21,6 +21,9 @@ class SocksForegroundService : Service() {
     private val NOTIFICATION_ID = 1
     private val ACTION_STOP_SERVICE = "net.isaeff.android.asproxy.action.STOP_SERVICE"
 
+    private var socksServer: SocksServer? = null
+    private var sshTunnelManager: SSHTunnelManager? = null // Make it nullable
+
     override fun onBind(intent: Intent?): IBinder? {
         // Not a bound service
         return null
@@ -41,56 +44,128 @@ class SocksForegroundService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        
-        // Create notification first
-        val notification = createNotification()
-        AAPLog.append("Notification created")
-        
-        // Start as foreground service with notification
-        try {
-            startForeground(NOTIFICATION_ID, notification)
-            AAPLog.append("Foreground service started with notification")
-        } catch (e: Exception) {
-            AAPLog.append("Failed to start foreground: ${e.message}")
+
+        // Extract parameters from intent
+        val sshServer = intent?.getStringExtra("ssh_server") ?: run {
+            AAPLog.append("Error: SSH server parameter missing")
+            ConnectionStateHolder.setState(ConnectionState.DISCONNECTED)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        val remotePort = intent.getIntExtra("remote_port", -1).takeIf { it != -1 } ?: run {
+            AAPLog.append("Error: Remote port parameter missing or invalid")
+            ConnectionStateHolder.setState(ConnectionState.DISCONNECTED)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        val username = intent.getStringExtra("username") ?: run {
+            AAPLog.append("Error: Username parameter missing")
+            ConnectionStateHolder.setState(ConnectionState.DISCONNECTED)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        val password = intent.getStringExtra("password") ?: run {
+            AAPLog.append("Error: Password parameter missing")
+            ConnectionStateHolder.setState(ConnectionState.DISCONNECTED)
             stopSelf()
             return START_NOT_STICKY
         }
 
-        // Stub: start proxy here
+        // Create notification first
+        val notification = createNotification()
+        AAPLog.append("Notification created")
+
+        // Start as foreground service with notification
+        try {
+            startForeground(NOTIFICATION_ID, notification)
+            AAPLog.append("Foreground service started with notification")
+            ConnectionStateHolder.setState(ConnectionState.CONNECTING) // Set state to connecting early
+        } catch (e: Exception) {
+            AAPLog.append("Failed to start foreground: ${e.message}")
+            ConnectionStateHolder.setState(ConnectionState.DISCONNECTED)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        // Initialize and start SSHTunnelManager with parameters
+        sshTunnelManager = SSHTunnelManager(
+            sshUser = username,
+            sshHost = sshServer.split(":")[0], // Assuming format host:port
+            sshPort = sshServer.split(":").getOrNull(1)?.toIntOrNull() ?: 22, // Default SSH port 22
+            sshPassword = password,
+            remotePort = remotePort
+        ).apply {
+            onError = { errorMessage ->
+                AAPLog.append(errorMessage)
+                // SSHTunnelManager already sets state to DISCONNECTED on error
+                stopSelf() // Stop the service if SSH fails
+                // Show error toast
+                android.os.Handler(mainLooper).post {
+                    android.widget.Toast.makeText(
+                        this@SocksForegroundService, // Use service context
+                        "SSH connection failed, see log",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+            startSSHTunnel()
+            AAPLog.append("SFS: SSH tunnel start requested")
+        }
+
+
+        // TODO: start jsocks here, ideally after SSH tunnel is confirmed CONNECTED
+        // For now, keeping it here as in original code, but timing needs review
         try {
             startJsocks()
-            startSSHtunnel()
-            AAPLog.append("Socks proxy started")
+            AAPLog.append("Socks proxy started on local port 1080")
         } catch (e: Exception) {
             AAPLog.append("Error starting socks proxy: ${e.message}")
+            // If SOCKS fails, stop everything
+            sshTunnelManager?.stopSSHTunnel() // Stop SSH tunnel if it started
+            ConnectionStateHolder.setState(ConnectionState.DISCONNECTED)
             stopSelf()
+            return START_NOT_STICKY
         }
+
 
         return START_STICKY
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        // Stub: stop jsocks proxy here
+        AAPLog.append("Service onDestroy()")
+        // Stop jsocks proxy
         try {
             stopJsocks()
-            stopSSHtunnel()
-            sshTunnelManager.destroy()
-            AAPLog.append("Socks proxy stopped")
-            // Show toast on service stop
-            android.os.Handler(mainLooper).post {
-                android.widget.Toast.makeText(
-                    this,
-                    "SOCKS proxy is stopped",
-                    android.widget.Toast.LENGTH_LONG
-                ).show()
-            }
-            // Broadcast service stopped event
-            val intent = Intent("net.isaeff.android.asproxy.SERVICE_STOPPED")
-            sendBroadcast(intent)
         } catch (e: Exception) {
             AAPLog.append("Error stopping socks proxy: ${e.message}")
         }
+
+        // Stop SSH tunnel and destroy manager
+        try {
+            sshTunnelManager?.stopSSHTunnel()
+            sshTunnelManager?.destroy() // Clean up coroutine scope etc.
+            sshTunnelManager = null
+        } catch (e: Exception) {
+            AAPLog.append("Error stopping SSH tunnel: ${e.message}")
+        }
+
+        // Update state to disconnected
+        ConnectionStateHolder.setState(ConnectionState.DISCONNECTED)
+
+        // Show toast on service stop
+        android.os.Handler(mainLooper).post {
+            android.widget.Toast.makeText(
+                this,
+                "SOCKS proxy is stopped",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+        }
+        // Broadcast service stopped event - This is no longer strictly needed for UI update
+        // but might be useful for other components. Keeping it for now.
+        val intent = Intent("net.isaeff.android.asproxy.SERVICE_STOPPED")
+        sendBroadcast(intent)
+
         AAPLog.append("SocksForegroundService stopped")
     }
 
@@ -146,14 +221,27 @@ class SocksForegroundService : Service() {
             .build()
     }
 
-    private var socksServer: SocksServer? = null
 
     // TODO: listen on 127.0.0.1 for security, currently it listens on 0.0.0.0 by default
     private fun startJsocks() {
         try {
+            // The SOCKS server should listen on the local port (1080)
+            // and forward requests through the SSH tunnel which is forwarding
+            // the remote port (e.g., 10800) back to the local port (1080).
+            // This setup seems reversed. Typically, the SOCKS server listens locally (e.g., 1080)
+            // and connects to the SSH server's *local* forwarding port (e.g., 10800 on localhost)
+            // which is then forwarded *remotely* by SSH.
+            // Let's assume the current setup intends for the SOCKS server to listen on 1080
+            // and the SSH tunnel is set up for remote forwarding R 10800:localhost:1080.
+            // This means traffic arriving at the SSH server on port 10800 is forwarded to
+            // localhost:1080 *on the Android device*. The SOCKS server should listen on 1080
+            // *on the Android device*.
+            // The current SSHTunnelManager sets up R remotePort:localhost:localPort (10800:localhost:1080).
+            // The SocksServer is created with port 1080. This seems correct for the intended flow.
+
             socksServer = SocksServer(1080).apply {
                 start()
-                AAPLog.append("SOCKS proxy started on port 1080")
+                AAPLog.append("SOCKS proxy started on local port 1080")
             }
         } catch (e: Exception) {
             socksServer = null
@@ -176,29 +264,4 @@ class SocksForegroundService : Service() {
             throw e
         }
     }
-
-    private val sshTunnelManager = SSHTunnelManager()
-
-    private fun startSSHtunnel() {
-        sshTunnelManager.onError = { errorMessage ->
-            AAPLog.append(errorMessage)
-            stopSelf()
-            // Show error toast
-            android.os.Handler(mainLooper).post {
-                android.widget.Toast.makeText(
-                    this,
-                    "SSH connection failed, see log",
-                    android.widget.Toast.LENGTH_LONG
-                ).show()
-            }
-        }
-        sshTunnelManager.startSSHTunnel()
-        AAPLog.append("SFS: SSH tunnel started")
-    }
-
-    private fun stopSSHtunnel() {
-        sshTunnelManager.stopSSHTunnel()
-        AAPLog.append("SFS: SSH tunnel stopped")
-    }
 }
-

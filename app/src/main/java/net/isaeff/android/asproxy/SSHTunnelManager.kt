@@ -5,22 +5,19 @@ import com.jcraft.jsch.Session
 import kotlinx.coroutines.*
 import java.util.Properties
 
-class SSHTunnelManager {
+class SSHTunnelManager(
+    private val sshUser: String,
+    private val sshHost: String,
+    private val sshPort: Int,
+    private val sshPassword: String, // Consider secure storage - currently passed via Intent
+    private val remotePort: Int,
+    private val localHost: String = "localhost", // Default to localhost
+    private val localPort: Int = 1080 // Default to 1080 for SOCKS
+) {
     var onError: ((String) -> Unit)? = null
     private var session: Session? = null
     private var tunnelJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-
-    // SSH connection parameters
-    private val sshUser = "tester"
-    private val sshHost = "192.168.0.242"
-    private val sshPort = 22
-    private val sshPassword = "grogogo" // Consider secure storage
-
-    // Port forwarding parameters
-    private val remotePort = 10022
-    private val localHost = "localhost"
-    private val localPort = 1080
 
     fun startSSHTunnel() {
         // Cancel any existing job
@@ -29,7 +26,8 @@ class SSHTunnelManager {
         // Start a new job for the SSH tunnel
         tunnelJob = scope.launch {
             try {
-                AAPLog.append("Starting SSH tunnel...")
+                AAPLog.append("Starting SSH tunnel to $sshHost:$sshPort for user $sshUser, forwarding remote $remotePort to local $localHost:$localPort")
+                ConnectionStateHolder.setState(ConnectionState.CONNECTING) // Set state to connecting
 
                 val jsch = JSch()
                 // For key-based authentication:
@@ -52,9 +50,10 @@ class SSHTunnelManager {
                 // Set up remote port forwarding
                 session?.setPortForwardingR(remotePort, localHost, localPort)
 
-                // Update UI on the main thread
+                // Update UI state and log on success
                 withContext(Dispatchers.Main) {
-                    AAPLog.append("SSH tunnel started")
+                    AAPLog.append("SSH tunnel started successfully")
+                    ConnectionStateHolder.setState(ConnectionState.CONNECTED) // Set state to connected
                 }
 
                 // Keep the coroutine alive to maintain the connection
@@ -62,7 +61,8 @@ class SSHTunnelManager {
                 while (isActive) {
                     if (session?.isConnected != true) {
                         withContext(Dispatchers.Main) {
-                            AAPLog.append("SSH connection lost, reconnecting...")
+                            AAPLog.append("SSH connection lost, attempting reconnect...")
+                            ConnectionStateHolder.setState(ConnectionState.CONNECTING) // Set state to connecting
                         }
                         reconnect()
                     }
@@ -71,6 +71,7 @@ class SSHTunnelManager {
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
                     AAPLog.append("SSH tunnel failed: ${e.message}")
+                    ConnectionStateHolder.setState(ConnectionState.DISCONNECTED) // Set state to disconnected on failure
                 }
                 onError?.invoke("SSH tunnel failed: ${e.message}")
                 e.printStackTrace()
@@ -97,27 +98,32 @@ class SSHTunnelManager {
             session?.setPortForwardingR(remotePort, localHost, localPort)
 
             withContext(Dispatchers.Main) {
-                AAPLog.append("SSH tunnel reconnected")
+                AAPLog.append("SSH tunnel reconnected successfully")
+                ConnectionStateHolder.setState(ConnectionState.CONNECTED) // Set state to connected
             }
         } catch (e: Exception) {
             withContext(Dispatchers.Main) {
                 AAPLog.append("Reconnection failed: ${e.message}")
+                ConnectionStateHolder.setState(ConnectionState.DISCONNECTED) // Set state to disconnected on failure
             }
             onError?.invoke("Reconnection failed: ${e.message}")
             // Wait before trying again
-            delay(5000)
+            delay(5000) // Wait 5 seconds before next reconnect attempt (the while loop will trigger it)
         }
     }
 
     fun stopSSHTunnel() {
         scope.launch(Dispatchers.IO) {
             try {
+                AAPLog.append("Stopping SSH tunnel...")
+                ConnectionStateHolder.setState(ConnectionState.DISCONNECTING) // Set state to disconnecting
+
                 // Cancel the tunnel monitoring job
                 tunnelJob?.cancel()
                 tunnelJob = null
 
                 // Cancel port forwarding
-                session?.delPortForwardingR(remotePort)
+                // session?.delPortForwardingR(remotePort) // This might not be necessary if session disconnects
 
                 // Disconnect the session
                 session?.disconnect()
@@ -125,10 +131,14 @@ class SSHTunnelManager {
 
                 withContext(Dispatchers.Main) {
                     AAPLog.append("SSH tunnel stopped")
+                    ConnectionStateHolder.setState(ConnectionState.DISCONNECTED) // Set state to disconnected
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
                     AAPLog.append("Failed to stop SSH tunnel: ${e.message}")
+                    // State might remain DISCONNECTING or go to DISCONNECTED depending on failure
+                    // Let's assume it eventually goes to DISCONNECTED
+                    ConnectionStateHolder.setState(ConnectionState.DISCONNECTED)
                 }
                 e.printStackTrace()
             }
@@ -137,8 +147,9 @@ class SSHTunnelManager {
 
     // Clean up resources when the component is destroyed
     fun destroy() {
-        scope.cancel()
+        scope.cancel() // Cancel the coroutine scope
         session?.disconnect()
         session = null
+        AAPLog.append("SSHTunnelManager destroyed")
     }
 }

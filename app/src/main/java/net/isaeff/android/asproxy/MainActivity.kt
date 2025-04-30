@@ -49,6 +49,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.runtime.collectAsState // Import collectAsState
 
 import net.isaeff.android.asproxy.ui.theme.AAPTheme
 
@@ -80,7 +81,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-enum class ConnectionState { DISCONNECTED, CONNECTING, CONNECTED, DISCONNECTING }
+// Removed enum class ConnectionState {} as it's now in ConnectionStateHolder.kt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -92,33 +93,11 @@ fun MainScreen() {
     var remotePort by rememberSaveable { mutableStateOf("") }
     var username by rememberSaveable { mutableStateOf("") }
     var password by rememberSaveable { mutableStateOf("") }
-    var connectionState by rememberSaveable { mutableStateOf(ConnectionState.DISCONNECTED) }
 
-    // Broadcast receiver to listen for service stop event
-    val serviceStoppedReceiver = remember {
-        object : android.content.BroadcastReceiver() {
-            override fun onReceive(context: android.content.Context?, intent: android.content.Intent?) {
-                if (intent?.action == "net.isaeff.android.asproxy.SERVICE_STOPPED") {
-                    connectionState = ConnectionState.DISCONNECTED
-                    AAPLog.append("Received service stopped broadcast, updating UI")
-                }
-            }
-        }
-    }
+    // Observe the connection state from the shared holder
+    val connectionState by ConnectionStateHolder.connectionState.collectAsState()
 
-    // Register and unregister broadcast receiver
-    androidx.compose.runtime.DisposableEffect(Unit) {
-        val filter = android.content.IntentFilter("net.isaeff.android.asproxy.SERVICE_STOPPED")
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-            val receiverFlags = android.content.Context.RECEIVER_NOT_EXPORTED
-            context.registerReceiver(serviceStoppedReceiver, filter, receiverFlags)
-        } else {
-            context.registerReceiver(serviceStoppedReceiver, filter)
-        }
-        onDispose {
-            context.unregisterReceiver(serviceStoppedReceiver)
-        }
-    }
+    // Removed Broadcast receiver logic as state is now observed from ConnectionStateHolder
 
     // Load saved values from SharedPreferences once
     androidx.compose.runtime.LaunchedEffect(Unit) {
@@ -131,7 +110,7 @@ fun MainScreen() {
 
     val scrollState = rememberScrollState()
     val isFormValid = sshServer.isNotBlank() && remotePort.isNotBlank() &&
-            username.isNotBlank() && password.isNotBlank()
+            username.isNotBlank() && password.isNotBlank() && remotePort.all { it.isDigit() } // Added digit check for remotePort
 
     // Notification permission launcher
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
@@ -146,7 +125,7 @@ fun MainScreen() {
 
     // Check if we need to request notification permission
     val shouldRequestNotificationPermission = remember {
-        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && 
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
         context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
     }
 
@@ -201,11 +180,6 @@ fun MainScreen() {
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 // SSH Server Input
-
-
-
-
-
                 OutlinedTextField(
                     value = sshServer,
                     onValueChange = { sshServer = it },
@@ -216,7 +190,9 @@ fun MainScreen() {
                     keyboardOptions = KeyboardOptions(
                         keyboardType = KeyboardType.Uri,
                         imeAction = ImeAction.Next
-                    )
+                    ),
+                    // Disable input when connecting or connected
+                    enabled = connectionState == ConnectionState.DISCONNECTED
                 )
 
                 // Remote Port Input
@@ -232,10 +208,12 @@ fun MainScreen() {
                         imeAction = ImeAction.Next
                     ),
                     visualTransformation = if (remotePort.isNotEmpty() && !remotePort.all { it.isDigit() }) {
-                        VisualTransformation.None
+                        VisualTransformation.None // Show invalid input
                     } else {
                         VisualTransformation.None
-                    }
+                    },
+                    // Disable input when connecting or connected
+                    enabled = connectionState == ConnectionState.DISCONNECTED
                 )
 
                 // Username Input
@@ -247,7 +225,9 @@ fun MainScreen() {
                     modifier = Modifier.fillMaxWidth(),
                     keyboardOptions = KeyboardOptions(
                         imeAction = ImeAction.Next
-                    )
+                    ),
+                    // Disable input when connecting or connected
+                    enabled = connectionState == ConnectionState.DISCONNECTED
                 )
 
                 // Password Input
@@ -261,7 +241,9 @@ fun MainScreen() {
                     keyboardOptions = KeyboardOptions(
                         keyboardType = KeyboardType.Password,
                         imeAction = ImeAction.Done
-                    )
+                    ),
+                    // Disable input when connecting or connected
+                    enabled = connectionState == ConnectionState.DISCONNECTED
                 )
 
                 Spacer(modifier = Modifier.height(32.dp))
@@ -271,20 +253,33 @@ fun MainScreen() {
                 Button(
                     onClick = {
                         // Check notification permission again right before connecting
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && 
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                             context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                             return@Button
                         }
 
-                        connectionState = when (connectionState) {
+                        when (connectionState) {
                             ConnectionState.DISCONNECTED -> {
-                                MainActivity.aaplog("Starting SOCKS server via SSH to $sshServer")
+                                MainActivity.aaplog("Attempting to start SOCKS server via SSH to $sshServer")
+                                // Save preferences on connect attempt
+                                val prefs = context.getSharedPreferences(
+                                    "aap_prefs",
+                                    Context.MODE_PRIVATE
+                                )
+                                with(prefs.edit()) {
+                                    putString("ssh_server", sshServer)
+                                    putString("remote_port", remotePort)
+                                    putString("username", username)
+                                    putString("password", password)
+                                    apply()
+                                }
+
                                 // Start the foreground service with parameters
                                 try {
                                     val intent = Intent(context, SocksForegroundService::class.java).apply {
                                         putExtra("ssh_server", sshServer)
-                                        putExtra("remote_port", remotePort.toInt())
+                                        putExtra("remote_port", remotePort.toInt()) // Ensure it's an Int
                                         putExtra("username", username)
                                         putExtra("password", password)
                                     }
@@ -297,52 +292,26 @@ fun MainScreen() {
                                     }
                                 } catch (e: Exception) {
                                     AAPLog.append("Failed to start service: ${e.message}")
+                                    ConnectionStateHolder.setState(ConnectionState.DISCONNECTED) // Revert state on immediate failure
                                 }
-                                ConnectionState.CONNECTING
+                                // State will be updated by the service (CONNECTING -> CONNECTED or DISCONNECTED)
                             }
                             ConnectionState.CONNECTED -> {
-                                MainActivity.aaplog("Stopping SOCKS server")
+                                MainActivity.aaplog("Attempting to stop SOCKS server")
                                 // Stop the foreground service
                                 val intent = Intent(context, SocksForegroundService::class.java)
                                 context.stopService(intent)
-                                ConnectionState.DISCONNECTING
+                                // State will be updated by the service (DISCONNECTING -> DISCONNECTED)
                             }
-                            else -> connectionState
-                        }
-
-                        // Simulate connection state change
-                        if (isFormValid) {
-                            connectionState = when (connectionState) {
-                                ConnectionState.CONNECTING -> {
-                                    MainActivity.aaplog("SOCKS server started successfully on port $remotePort")
-                                    ConnectionState.CONNECTED
-                                }
-                                ConnectionState.DISCONNECTING -> {
-                                    MainActivity.aaplog("SOCKS server stopped")
-                                    ConnectionState.DISCONNECTED
-                                }
-                                else -> connectionState
-                            }
-
-                            // Save preferences only on connect
-                            if (connectionState == ConnectionState.CONNECTED) {
-                                val prefs = context.getSharedPreferences(
-                                    "aap_prefs",
-                                    Context.MODE_PRIVATE
-                                )
-                                with(prefs.edit()) {
-                                    putString("ssh_server", sshServer)
-                                    putString("remote_port", remotePort)
-                                    putString("username", username)
-                                    putString("password", password)
-                                    apply()
-                                }
+                            else -> {
+                                // Do nothing if already connecting or disconnecting
                             }
                         }
                     },
                     modifier = Modifier
                         .weight(1f)
                         .padding(end = 8.dp),
+                    // Button is enabled only when disconnected or connected
                     enabled = isFormValid && (connectionState == ConnectionState.DISCONNECTED ||
                             connectionState == ConnectionState.CONNECTED),
                     colors = when (connectionState) {
@@ -355,7 +324,7 @@ fun MainScreen() {
                         )
 
                         else -> ButtonDefaults.buttonColors(
-                            containerColor = Color.Gray
+                            containerColor = Color.Gray // Grey out when connecting/disconnecting
                         )
                     }
                 ) {
