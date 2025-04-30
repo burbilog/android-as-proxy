@@ -94,6 +94,27 @@ fun MainScreen() {
     var password by rememberSaveable { mutableStateOf("") }
     var connectionState by rememberSaveable { mutableStateOf(ConnectionState.DISCONNECTED) }
 
+    // Broadcast receiver to listen for service stop event
+    val serviceStoppedReceiver = remember {
+        object : android.content.BroadcastReceiver() {
+            override fun onReceive(context: android.content.Context?, intent: android.content.Intent?) {
+                if (intent?.action == "net.isaeff.android.asproxy.SERVICE_STOPPED") {
+                    connectionState = ConnectionState.DISCONNECTED
+                    AAPLog.append("Received service stopped broadcast, updating UI")
+                }
+            }
+        }
+    }
+
+    // Register and unregister broadcast receiver
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        val filter = android.content.IntentFilter("net.isaeff.android.asproxy.SERVICE_STOPPED")
+        context.registerReceiver(serviceStoppedReceiver, filter)
+        onDispose {
+            context.unregisterReceiver(serviceStoppedReceiver)
+        }
+    }
+
     // Load saved values from SharedPreferences once
     androidx.compose.runtime.LaunchedEffect(Unit) {
         val prefs = context.getSharedPreferences("aap_prefs", Context.MODE_PRIVATE)

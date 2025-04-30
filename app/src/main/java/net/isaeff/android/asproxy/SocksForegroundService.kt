@@ -85,6 +85,9 @@ class SocksForegroundService : Service() {
                     android.widget.Toast.LENGTH_LONG
                 ).show()
             }
+            // Broadcast service stopped event
+            val intent = Intent("net.isaeff.android.asproxy.SERVICE_STOPPED")
+            sendBroadcast(intent)
         } catch (e: Exception) {
             AAPLog.append("Error stopping socks proxy: ${e.message}")
         }
