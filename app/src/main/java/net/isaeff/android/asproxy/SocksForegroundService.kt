@@ -9,11 +9,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
-import org.bbottema.javasocksproxyserver.SocksServer;
-import com.jcraft.jsch.JSch
-import com.jcraft.jsch.Session
-import java.util.Properties
-
+import org.bbottema.javasocksproxyserver.SocksServer
 
 class SocksForegroundService : Service() {
 
