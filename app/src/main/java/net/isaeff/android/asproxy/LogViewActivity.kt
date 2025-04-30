@@ -69,14 +69,13 @@ fun LogViewScreen() {
             modifier = Modifier
                 .padding(innerPadding)
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text(
                 text = logText,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1f),
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState()),
                 style = MaterialTheme.typography.bodyMedium
             )
 
