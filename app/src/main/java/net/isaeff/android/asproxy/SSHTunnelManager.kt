@@ -22,12 +22,13 @@ class SSHTunnelManager(
 ) {
     companion object {
         private const val PREFS_NAME = "SSHServerKeys"
-        private const val KEY_PREFIX = "server_key_"
+        private const val SERVER_KEY = "server_key"
     }
 
     private val prefs: SharedPreferences by lazy {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     }
+    private var currentHost: String? = null
     var onError: ((String) -> Unit)? = null
     private var session: Session? = null
     private var tunnelJob: Job? = null
@@ -55,7 +56,14 @@ class SSHTunnelManager(
 
                 // Configure session with host key checking
                 val config = Properties()
-                val storedKey = prefs.getString("$KEY_PREFIX$sshHost", null)
+                // Check if we're connecting to a new host
+                if (currentHost != sshHost) {
+                    // Clear any existing key when host changes
+                    prefs.edit().remove(SERVER_KEY).apply()
+                    currentHost = sshHost
+                }
+
+                val storedKey = prefs.getString(SERVER_KEY, null)
                 
                 if (storedKey == null) {
                     // First connection - store the key
@@ -66,7 +74,7 @@ class SSHTunnelManager(
                     val hostKey = session?.hostKey
                     if (hostKey != null) {
                         val keyString = "${hostKey.type} ${hostKey.key}"
-                        prefs.edit().putString("$KEY_PREFIX$sshHost", keyString).apply()
+                        prefs.edit().putString(SERVER_KEY, keyString).apply()
                         AAPLog.append("Stored new server key for $sshHost: $keyString")
                     }
                     
@@ -110,7 +118,7 @@ class SSHTunnelManager(
             } catch (e: JSchException) {
                 withContext(Dispatchers.Main) {
                     if (e.message?.contains("HostKey") == true) {
-                        val storedKey = prefs.getString("$KEY_PREFIX$sshHost", "")
+                        val storedKey = prefs.getString(SERVER_KEY, "")
                         val currentKey = session?.hostKey?.let { "${it.type} ${it.key}" } ?: "unknown"
                         AAPLog.append("SSH host key verification failed!\nStored key: $storedKey\nCurrent key: $currentKey")
                         onError?.invoke("Server key changed! Potential security issue.")
