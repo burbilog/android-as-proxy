@@ -29,7 +29,7 @@ class SSHTunnelManager(
     private val prefs: SharedPreferences by lazy {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     }
-    private var currentHost: String? = null
+    // Removed currentHost as it was causing unintended key clearing
     var onError: ((String) -> Unit)? = null
     private var session: Session? = null
     private var tunnelJob: Job? = null
@@ -55,45 +55,38 @@ class SSHTunnelManager(
                 // Password authentication
                 session?.setPassword(sshPassword)
 
-                // Configure session with host key checking
                 val config = Properties()
-                // Check if we're connecting to a new host
-                if (currentHost != sshHost) {
-                    // Clear any existing key when host changes
-                    prefs.edit().remove(SERVER_KEY).apply()
-                    currentHost = sshHost
-                }
-
                 val storedKey = prefs.getString(SERVER_KEY, null)
                 
-                if (storedKey == null) {
-                    // First connection - store the key
+                if (storedKey.isNullOrBlank()) {
+                    // No server key stored, accept new one and store it
                     config["StrictHostKeyChecking"] = "no"
-                    session?.setConfig(config)
-                    session?.connect(30000) // Connect first to get host key
-                    
-                    val hostKey = session?.hostKey
-                    if (hostKey != null) {
-                        val keyString = "${hostKey.type} ${hostKey.key}"
-                        prefs.edit().putString(SERVER_KEY, keyString).apply()
-                        AAPLog.append("Stored new server key for $sshHost: $keyString")
-                    }
-                    
-                    // Disconnect and reconnect with verification
-                    session?.disconnect()
-                    session = jsch.getSession(sshUser, sshHost, sshPort)
-                    session?.setPassword(sshPassword)
-                }
-
-                // Now configure with proper key checking
-                if (storedKey != null) {
+                    AAPLog.append("No server key found for $sshHost. Accepting new key.")
+                } else {
+                    // Server key exists, use it for strict checking
                     config["StrictHostKeyChecking"] = "yes"
-                    jsch.setKnownHosts(ByteArrayInputStream(storedKey.toByteArray()))
+                    // JSch's setKnownHosts expects a known_hosts file format.
+                    // We need to provide the host along with the key.
+                    val knownHostsEntry = "$sshHost $storedKey"
+                    jsch.setKnownHosts(ByteArrayInputStream(knownHostsEntry.toByteArray()))
+                    AAPLog.append("Using stored server key for $sshHost: $storedKey")
                 }
                 session?.setConfig(config)
 
                 // Connect to the server
                 session?.connect(30000) // 30 second timeout
+
+                // If a new key was accepted, store it now
+                if (storedKey.isNullOrBlank()) {
+                    val hostKey = session?.hostKey
+                    if (hostKey != null) {
+                        val keyString = "${hostKey.type} ${hostKey.key}"
+                        prefs.edit().putString(SERVER_KEY, keyString).apply()
+                        AAPLog.append("Stored new server key for $sshHost: $keyString")
+                    } else {
+                        AAPLog.append("Warning: No host key received after connection for $sshHost.")
+                    }
+                }
 
                 // Set up remote port forwarding
                 session?.setPortForwardingR(remotePort, localHost, localPort)
@@ -122,7 +115,7 @@ class SSHTunnelManager(
                         val storedKey = prefs.getString(SERVER_KEY, "")
                         val currentKey = session?.hostKey?.let { "${it.type} ${it.key}" } ?: "unknown"
                         AAPLog.append("SSH host key verification failed!\nStored key: $storedKey\nCurrent key: $currentKey")
-                        onError?.invoke("Server key changed! Potential security issue.")
+                        onError?.invoke("Server key changed! Potential security issue. Clear key to accept new.")
                     } else {
                         AAPLog.append("SSH tunnel failed: ${e.message}")
                     }
@@ -150,11 +143,36 @@ class SSHTunnelManager(
             session?.setPassword(sshPassword)
 
             val config = Properties()
-            config["StrictHostKeyChecking"] = "no"
+            val storedKey = prefs.getString(SERVER_KEY, null)
+
+            if (storedKey.isNullOrBlank()) {
+                // If key was cleared or never stored, accept new one
+                config["StrictHostKeyChecking"] = "no"
+                AAPLog.append("No server key found for $sshHost during reconnect. Accepting new key.")
+            } else {
+                // Use stored key for strict checking
+                config["StrictHostKeyChecking"] = "yes"
+                val knownHostsEntry = "$sshHost $storedKey"
+                jsch.setKnownHosts(ByteArrayInputStream(knownHostsEntry.toByteArray()))
+                AAPLog.append("Using stored server key for $sshHost during reconnect: $storedKey")
+            }
             session?.setConfig(config)
 
             // Connect and set up forwarding again
             session?.connect(30000)
+
+            // If a new key was accepted during reconnect, store it now
+            if (storedKey.isNullOrBlank()) {
+                val hostKey = session?.hostKey
+                if (hostKey != null) {
+                    val keyString = "${hostKey.type} ${hostKey.key}"
+                    prefs.edit().putString(SERVER_KEY, keyString).apply()
+                    AAPLog.append("Stored new server key for $sshHost during reconnect: $keyString")
+                } else {
+                    AAPLog.append("Warning: No host key received after reconnect for $sshHost.")
+                }
+            }
+
             session?.setPortForwardingR(remotePort, localHost, localPort)
 
             withContext(Dispatchers.Main) {
