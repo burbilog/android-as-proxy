@@ -50,6 +50,10 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState // Import collectAsState
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.Checkbox
+
 
 import net.isaeff.android.asproxy.ui.theme.AAPTheme
 
@@ -94,6 +98,11 @@ fun MainScreen() {
     var username by rememberSaveable { mutableStateOf("") }
     var password by rememberSaveable { mutableStateOf("") }
 
+    // State for server key preference and checkbox
+    var serverKeyPreferenceValue by rememberSaveable { mutableStateOf("") }
+    var storeServerKeyChecked by rememberSaveable { mutableStateOf(false) }
+    var showClearKeyDialog by rememberSaveable { mutableStateOf(false) }
+
     // Observe the connection state from the shared holder
     val connectionState by ConnectionStateHolder.connectionState.collectAsState()
 
@@ -106,6 +115,10 @@ fun MainScreen() {
         remotePort = prefs.getString("remote_port", "") ?: ""
         username = prefs.getString("username", "") ?: ""
         password = prefs.getString("password", "") ?: ""
+
+        // Initialize server key preference and checkbox state
+        serverKeyPreferenceValue = prefs.getString("server_key", "") ?: ""
+        storeServerKeyChecked = serverKeyPreferenceValue.isBlank() // Checked if no key is stored
     }
 
     val scrollState = rememberScrollState()
@@ -245,6 +258,82 @@ fun MainScreen() {
                     // Disable input when connecting or connected
                     enabled = connectionState == ConnectionState.DISCONNECTED
                 )
+
+                // Checkbox for server key
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Checkbox(
+                        checked = storeServerKeyChecked,
+                        onCheckedChange = { newValue ->
+                            if (newValue) { // User wants to check the box
+                                if (serverKeyPreferenceValue.isNotBlank()) {
+                                    // If a key exists, prompt to clear it
+                                    showClearKeyDialog = true
+                                } else {
+                                    // This case should ideally not be reachable if enabled is set correctly.
+                                    // If it is reached, it means the checkbox was already checked and disabled,
+                                    // and somehow onCheckedChange was triggered.
+                                    // We just ensure the state is consistent.
+                                    storeServerKeyChecked = true
+                                }
+                            } else { // User wants to uncheck the box (don't store new key)
+                                // This case is only reachable if serverKeyPreferenceValue.isNotBlank()
+                                // and the checkbox was initially unchecked.
+                                storeServerKeyChecked = false
+                            }
+                        },
+                        // Checkbox is enabled only if a server key is currently stored.
+                        // This allows the user to "check" it to clear the stored key.
+                        // If no key is stored, it's checked and disabled.
+                        enabled = serverKeyPreferenceValue.isNotBlank()
+                    )
+                    Text("Store new server key")
+                }
+
+                // Dialog for clearing host key
+                if (showClearKeyDialog) {
+                    AlertDialog(
+                        onDismissRequest = {
+                            showClearKeyDialog = false
+                            // If dialog is dismissed without confirming, revert checkbox state
+                            // (it was attempted to be checked, but not confirmed)
+                            storeServerKeyChecked = false
+                        },
+                        title = { Text("Confirm Host Key Removal") },
+                        text = { Text("Are you sure you want to remove the current host key:\n\"$serverKeyPreferenceValue\"?\n\nThis will allow a new key to be stored on the next successful connection.") },
+                        confirmButton = {
+                            TextButton(
+                                onClick = {
+                                    val prefs = context.getSharedPreferences("aap_prefs", Context.MODE_PRIVATE)
+                                    val oldKey = serverKeyPreferenceValue // Capture before clearing
+                                    with(prefs.edit()) {
+                                        remove("server_key")
+                                        apply()
+                                    }
+                                    serverKeyPreferenceValue = "" // Update state
+                                    storeServerKeyChecked = true // Checkbox becomes checked and disabled
+                                    AAPLog.append("Host key \"$oldKey\" cleared by user")
+                                    showClearKeyDialog = false
+                                }
+                            ) {
+                                Text("Yes, Clear Key")
+                            }
+                        },
+                        dismissButton = {
+                            TextButton(
+                                onClick = {
+                                    showClearKeyDialog = false
+                                    // Revert checkbox state if dialog dismissed without confirming
+                                    storeServerKeyChecked = false
+                                }
+                            ) {
+                                Text("Cancel")
+                            }
+                        }
+                    )
+                }
 
                 Spacer(modifier = Modifier.height(32.dp))
             }
