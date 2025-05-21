@@ -53,32 +53,43 @@ class SSHTunnelManager(
                 // Initialize session
                 session = jsch.getSession(sshUser, sshHost, sshPort)
 
-                // Configure crypto algorithms based on Android version
-                val config = Properties()
-                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-                    // For older Android versions (pre-Oreo), use more compatible algorithms
-                    config["kex"] = "diffie-hellman-group1-sha1,diffie-hellman-group14-sha1"
-                    config["server_host_key"] = "ssh-rsa,ssh-dss"
-                    config["cipher.s2c"] = "aes128-ctr,aes128-cbc,3des-ctr,3des-cbc,blowfish-cbc"
-                    config["cipher.c2s"] = "aes128-ctr,aes128-cbc,3des-ctr,3des-cbc,blowfish-cbc"
-                    config["mac.s2c"] = "hmac-md5,hmac-sha1,hmac-sha2-256,hmac-sha1-96,hmac-md5-96"
-                    config["mac.c2s"] = "hmac-md5,hmac-sha1,hmac-sha2-256,hmac-sha1-96,hmac-md5-96"
-                    AAPLog.append("Using legacy crypto algorithms for Android ${Build.VERSION.SDK_INT}")
-                } else {
-                    // For newer Android versions, use modern algorithms
-                    config["kex"] = "curve25519-sha256,curve25519-sha256@libssh.org,ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521,diffie-hellman-group-exchange-sha256,diffie-hellman-group16-sha512,diffie-hellman-group18-sha512,diffie-hellman-group14-sha256"
-                    config["server_host_key"] = "rsa-sha2-512,rsa-sha2-256,ssh-rsa,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,ssh-ed25519"
-                    config["cipher.s2c"] = "aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr"
-                    config["cipher.c2s"] = "aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr"
-                    config["mac.s2c"] = "hmac-sha2-256-etm@openssh.com,hmac-sha2-512-etm@openssh.com,hmac-sha1-etm@openssh.com,umac-128-etm@openssh.com"
-                    config["mac.c2s"] = "hmac-sha2-256-etm@openssh.com,hmac-sha2-512-etm@openssh.com,hmac-sha1-etm@openssh.com,umac-128-etm@openssh.com"
-                    AAPLog.append("Using modern crypto algorithms for Android ${Build.VERSION.SDK_INT}")
+                // Configure crypto algorithms and host key checking
+                val config = Properties().apply {
+                    // Set crypto algorithms based on Android version
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+                        // For older Android versions (pre-Oreo), use more compatible algorithms
+                        put("kex", "diffie-hellman-group1-sha1,diffie-hellman-group14-sha1")
+                        put("server_host_key", "ssh-rsa,ssh-dss")
+                        put("cipher.s2c", "aes128-ctr,aes128-cbc,3des-ctr,3des-cbc,blowfish-cbc")
+                        put("cipher.c2s", "aes128-ctr,aes128-cbc,3des-ctr,3des-cbc,blowfish-cbc")
+                        put("mac.s2c", "hmac-md5,hmac-sha1,hmac-sha2-256,hmac-sha1-96,hmac-md5-96")
+                        put("mac.c2s", "hmac-md5,hmac-sha1,hmac-sha2-256,hmac-sha1-96,hmac-md5-96")
+                        AAPLog.append("Using legacy crypto algorithms for Android ${Build.VERSION.SDK_INT}")
+                    } else {
+                        // For newer Android versions, use modern algorithms
+                        put("kex", "curve25519-sha256,curve25519-sha256@libssh.org,ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521,diffie-hellman-group-exchange-sha256,diffie-hellman-group16-sha512,diffie-hellman-group18-sha512,diffie-hellman-group14-sha256")
+                        put("server_host_key", "rsa-sha2-512,rsa-sha2-256,ssh-rsa,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,ssh-ed25519")
+                        put("cipher.s2c", "aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr")
+                        put("cipher.c2s", "aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr")
+                        put("mac.s2c", "hmac-sha2-256-etm@openssh.com,hmac-sha2-512-etm@openssh.com,hmac-sha1-etm@openssh.com,umac-128-etm@openssh.com")
+                        put("mac.c2s", "hmac-sha2-256-etm@openssh.com,hmac-sha2-512-etm@openssh.com,hmac-sha1-etm@openssh.com,umac-128-etm@openssh.com")
+                        AAPLog.append("Using modern crypto algorithms for Android ${Build.VERSION.SDK_INT}")
+                    }
+
+                    // Set host key checking
+                    val storedKey = prefs.getString(SERVER_KEY, null)
+                    if (storedKey.isNullOrBlank()) {
+                        // No server key stored, accept new one and store it
+                        put("StrictHostKeyChecking", "no")
+                        AAPLog.append("No server key found for $sshHost. Accepting new key.")
+                    } else {
+                        // Server key exists, use it for strict checking
+                        put("StrictHostKeyChecking", "yes")
+                    }
                 }
 
                 // Password authentication
                 session?.setPassword(sshPassword)
-
-                val config = Properties()
                 val storedKey = prefs.getString(SERVER_KEY, null)
                 
                 if (storedKey.isNullOrBlank()) {
