@@ -22,7 +22,7 @@ class SSHTunnelManager(
     private val localPort: Int = 1080
 ) {
     companion object {
-        private const val PREFS_NAME = "SSHServerKeys"
+        private const val PREFS_NAME = "aap_prefs"
         private const val SERVER_KEY = "server_key"
     }
 
