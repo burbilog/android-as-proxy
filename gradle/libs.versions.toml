@@ -1,5 +1,5 @@
 [versions]
-agp = "8.9.2"
+agp = "8.10.0"
 javaSocksProxyServer = "4.1.2"
 jsch = "0.1.55"
 jsocks = "1.0.1-jitsi-1"
