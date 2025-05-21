@@ -85,6 +85,7 @@ class SocksForegroundService : Service() {
 
         // Initialize and start SSHTunnelManager with parameters
         sshTunnelManager = SSHTunnelManager(
+            context = this,
             sshUser = username,
             sshHost = sshServer.split(":")[0], // Assuming format host:port
             sshPort = sshServer.split(":").getOrNull(1)?.toIntOrNull() ?: 22, // Default SSH port 22
