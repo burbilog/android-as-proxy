@@ -53,6 +53,8 @@ import androidx.compose.runtime.collectAsState // Import collectAsState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Checkbox
+import android.content.SharedPreferences
+import androidx.compose.runtime.DisposableEffect
 
 
 import net.isaeff.android.asproxy.ui.theme.AAPTheme
@@ -92,6 +94,9 @@ class MainActivity : ComponentActivity() {
 fun MainScreen() {
     val context = LocalContext.current
 
+    // Get SharedPreferences instance once and remember it
+    val prefs = remember { context.getSharedPreferences("aap_prefs", Context.MODE_PRIVATE) }
+
     // Load saved preferences on first composition
     var sshServer by rememberSaveable { mutableStateOf("") }
     var remotePort by rememberSaveable { mutableStateOf("") }
@@ -108,9 +113,8 @@ fun MainScreen() {
 
     // Removed Broadcast receiver logic as state is now observed from ConnectionStateHolder
 
-    // Load saved values from SharedPreferences once
-    androidx.compose.runtime.LaunchedEffect(Unit) {
-        val prefs = context.getSharedPreferences("aap_prefs", Context.MODE_PRIVATE)
+    // Initial load of saved values from SharedPreferences
+    LaunchedEffect(Unit) {
         sshServer = prefs.getString("ssh_server", "") ?: ""
         remotePort = prefs.getString("remote_port", "") ?: ""
         username = prefs.getString("username", "") ?: ""
@@ -118,7 +122,26 @@ fun MainScreen() {
 
         // Initialize server key preference and checkbox state
         serverKeyPreferenceValue = prefs.getString("server_key", "") ?: ""
-        storeServerKeyChecked = serverKeyPreferenceValue.isBlank() // Checked if no key is stored
+        // Checkbox is checked if no key is stored (meaning we want to store a new one)
+        storeServerKeyChecked = serverKeyPreferenceValue.isBlank()
+    }
+
+    // Listen for changes to SharedPreferences, specifically the "server_key"
+    DisposableEffect(prefs) {
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { sharedPreferences, key ->
+            if (key == "server_key") {
+                val newKey = sharedPreferences.getString("server_key", "") ?: ""
+                serverKeyPreferenceValue = newKey
+                // Update checkbox state: checked if no key, unchecked if key exists
+                storeServerKeyChecked = newKey.isBlank()
+                AAPLog.append("MainActivity: server_key preference changed to '$newKey', checkbox state updated to $storeServerKeyChecked")
+            }
+        }
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+
+        onDispose {
+            prefs.unregisterOnSharedPreferenceChangeListener(listener)
+        }
     }
 
     val scrollState = rememberScrollState()
@@ -306,7 +329,6 @@ fun MainScreen() {
                         confirmButton = {
                             TextButton(
                                 onClick = {
-                                    val prefs = context.getSharedPreferences("aap_prefs", Context.MODE_PRIVATE)
                                     val oldKey = serverKeyPreferenceValue // Capture before clearing
                                     with(prefs.edit()) {
                                         remove("server_key")
@@ -352,10 +374,6 @@ fun MainScreen() {
                             ConnectionState.DISCONNECTED -> {
                                 MainActivity.aaplog("Attempting to start SOCKS server via SSH to $sshServer")
                                 // Save preferences on connect attempt
-                                val prefs = context.getSharedPreferences(
-                                    "aap_prefs",
-                                    Context.MODE_PRIVATE
-                                )
                                 with(prefs.edit()) {
                                     putString("ssh_server", sshServer)
                                     putString("remote_port", remotePort)
@@ -447,4 +465,3 @@ fun MainScreenPreview() {
         MainScreen()
     }
 }
-
