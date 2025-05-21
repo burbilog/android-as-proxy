@@ -1,19 +1,33 @@
 package net.isaeff.android.asproxy
 
+import android.content.Context
+import android.content.SharedPreferences
+import com.jcraft.jsch.HostKey
+import com.jcraft.jsch.HostKeyRepository
 import com.jcraft.jsch.JSch
+import com.jcraft.jsch.JSchException
 import com.jcraft.jsch.Session
 import kotlinx.coroutines.*
 import java.util.Properties
 
 class SSHTunnelManager(
+    private val context: Context,
     private val sshUser: String,
     private val sshHost: String,
     private val sshPort: Int,
-    private val sshPassword: String, // Consider secure storage - currently passed via Intent
+    private val sshPassword: String,
     private val remotePort: Int,
-    private val localHost: String = "localhost", // Default to localhost
-    private val localPort: Int = 1080 // Default to 1080 for SOCKS
+    private val localHost: String = "localhost",
+    private val localPort: Int = 1080
 ) {
+    companion object {
+        private const val PREFS_NAME = "SSHServerKeys"
+        private const val KEY_PREFIX = "server_key_"
+    }
+
+    private val prefs: SharedPreferences by lazy {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    }
     var onError: ((String) -> Unit)? = null
     private var session: Session? = null
     private var tunnelJob: Job? = null
@@ -39,9 +53,34 @@ class SSHTunnelManager(
                 // Password authentication
                 session?.setPassword(sshPassword)
 
-                // Configure session
+                // Configure session with host key checking
                 val config = Properties()
-                config["StrictHostKeyChecking"] = "no" // Not recommended for production
+                val storedKey = prefs.getString("$KEY_PREFIX$sshHost", null)
+                
+                if (storedKey == null) {
+                    // First connection - store the key
+                    config["StrictHostKeyChecking"] = "no"
+                    session?.setConfig(config)
+                    session?.connect(30000) // Connect first to get host key
+                    
+                    val hostKey = session?.hostKey
+                    if (hostKey != null) {
+                        val keyString = "${hostKey.type} ${hostKey.key}"
+                        prefs.edit().putString("$KEY_PREFIX$sshHost", keyString).apply()
+                        AAPLog.append("Stored new server key for $sshHost: $keyString")
+                    }
+                    
+                    // Disconnect and reconnect with verification
+                    session?.disconnect()
+                    session = jsch.getSession(sshUser, sshHost, sshPort)
+                    session?.setPassword(sshPassword)
+                }
+
+                // Now configure with proper key checking
+                if (storedKey != null) {
+                    config["StrictHostKeyChecking"] = "yes"
+                    jsch.setKnownHosts(byteArrayInputStream(storedKey.toByteArray()))
+                }
                 session?.setConfig(config)
 
                 // Connect to the server
@@ -68,13 +107,25 @@ class SSHTunnelManager(
                     }
                     delay(30000) // Check every 30 seconds
                 }
+            } catch (e: JSchException) {
+                withContext(Dispatchers.Main) {
+                    if (e.message?.contains("HostKey") == true) {
+                        val storedKey = prefs.getString("$KEY_PREFIX$sshHost", "")
+                        val currentKey = session?.hostKey?.let { "${it.type} ${it.key}" } ?: "unknown"
+                        AAPLog.append("SSH host key verification failed!\nStored key: $storedKey\nCurrent key: $currentKey")
+                        onError?.invoke("Server key changed! Potential security issue.")
+                    } else {
+                        AAPLog.append("SSH tunnel failed: ${e.message}")
+                    }
+                    ConnectionStateHolder.setState(ConnectionState.DISCONNECTED)
+                }
+                stopSSHTunnel()
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
                     AAPLog.append("SSH tunnel failed: ${e.message}")
-                    ConnectionStateHolder.setState(ConnectionState.DISCONNECTED) // Set state to disconnected on failure
+                    ConnectionStateHolder.setState(ConnectionState.DISCONNECTED)
                 }
                 onError?.invoke("SSH tunnel failed: ${e.message}")
-                e.printStackTrace()
             }
         }
     }
