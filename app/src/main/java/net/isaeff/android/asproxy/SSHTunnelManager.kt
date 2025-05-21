@@ -54,8 +54,8 @@ class SSHTunnelManager(
                 session = jsch.getSession(sshUser, sshHost, sshPort)
 
                 // Configure crypto algorithms and host key checking
-                val config = Properties()
-                val storedKey = prefs.getString(SERVER_KEY, null)
+                val config = Properties().also { config ->
+                    val storedKey = prefs.getString(SERVER_KEY, null)
                 
                 // Set crypto algorithms based on Android version
                 if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
@@ -78,19 +78,20 @@ class SSHTunnelManager(
                     AAPLog.append("Using modern crypto algorithms for Android ${Build.VERSION.SDK_INT}")
                 }
 
-                // Configure host key checking
-                if (storedKey.isNullOrBlank()) {
-                    config["StrictHostKeyChecking"] = "no"
-                    AAPLog.append("No server key found for $sshHost. Accepting new key.")
-                } else {
-                    config["StrictHostKeyChecking"] = "yes"
-                    try {
-                        val knownHostsEntry = "$sshHost $storedKey"
-                        jsch.setKnownHosts(ByteArrayInputStream(knownHostsEntry.toByteArray()))
-                        AAPLog.append("Using stored server key for $sshHost")
-                    } catch (e: Exception) {
-                        AAPLog.append("Error setting known hosts: ${e.message}")
+                    // Configure host key checking
+                    if (storedKey.isNullOrBlank()) {
                         config["StrictHostKeyChecking"] = "no"
+                        AAPLog.append("No server key found for $sshHost. Accepting new key.")
+                    } else {
+                        config["StrictHostKeyChecking"] = "yes"
+                        try {
+                            val knownHostsEntry = "$sshHost $storedKey"
+                            jsch.setKnownHosts(ByteArrayInputStream(knownHostsEntry.toByteArray()))
+                            AAPLog.append("Using stored server key for $sshHost")
+                        } catch (e: Exception) {
+                            AAPLog.append("Error setting known hosts: ${e.message}")
+                            config["StrictHostKeyChecking"] = "no"
+                        }
                     }
                 }
 
