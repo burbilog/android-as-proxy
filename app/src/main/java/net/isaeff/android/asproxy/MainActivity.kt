@@ -307,10 +307,11 @@ fun MainScreen() {
                                 storeServerKeyChecked = false
                             }
                         },
-                        // Checkbox is enabled only if a server key is currently stored.
+                        // Checkbox is enabled only if a server key is currently stored AND
+                        // the connection is DISCONNECTED.
                         // This allows the user to "check" it to clear the stored key.
                         // If no key is stored, it's checked and disabled.
-                        enabled = serverKeyPreferenceValue.isNotBlank()
+                        enabled = serverKeyPreferenceValue.isNotBlank() && connectionState == ConnectionState.DISCONNECTED
                     )
                     Text("Store new server key")
                 }
