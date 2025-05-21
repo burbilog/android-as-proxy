@@ -54,57 +54,48 @@ class SSHTunnelManager(
                 session = jsch.getSession(sshUser, sshHost, sshPort)
 
                 // Configure crypto algorithms and host key checking
-                val config = Properties().apply {
-                    // Set crypto algorithms based on Android version
-                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-                        // For older Android versions (pre-Oreo), use more compatible algorithms
-                        put("kex", "diffie-hellman-group1-sha1,diffie-hellman-group14-sha1")
-                        put("server_host_key", "ssh-rsa,ssh-dss")
-                        put("cipher.s2c", "aes128-ctr,aes128-cbc,3des-ctr,3des-cbc,blowfish-cbc")
-                        put("cipher.c2s", "aes128-ctr,aes128-cbc,3des-ctr,3des-cbc,blowfish-cbc")
-                        put("mac.s2c", "hmac-md5,hmac-sha1,hmac-sha2-256,hmac-sha1-96,hmac-md5-96")
-                        put("mac.c2s", "hmac-md5,hmac-sha1,hmac-sha2-256,hmac-sha1-96,hmac-md5-96")
-                        AAPLog.append("Using legacy crypto algorithms for Android ${Build.VERSION.SDK_INT}")
-                    } else {
-                        // For newer Android versions, use modern algorithms
-                        put("kex", "curve25519-sha256,curve25519-sha256@libssh.org,ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521,diffie-hellman-group-exchange-sha256,diffie-hellman-group16-sha512,diffie-hellman-group18-sha512,diffie-hellman-group14-sha256")
-                        put("server_host_key", "rsa-sha2-512,rsa-sha2-256,ssh-rsa,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,ssh-ed25519")
-                        put("cipher.s2c", "aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr")
-                        put("cipher.c2s", "aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr")
-                        put("mac.s2c", "hmac-sha2-256-etm@openssh.com,hmac-sha2-512-etm@openssh.com,hmac-sha1-etm@openssh.com,umac-128-etm@openssh.com")
-                        put("mac.c2s", "hmac-sha2-256-etm@openssh.com,hmac-sha2-512-etm@openssh.com,hmac-sha1-etm@openssh.com,umac-128-etm@openssh.com")
-                        AAPLog.append("Using modern crypto algorithms for Android ${Build.VERSION.SDK_INT}")
-                    }
+                val config = Properties()
+                val storedKey = prefs.getString(SERVER_KEY, null)
+                
+                // Set crypto algorithms based on Android version
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+                    // For older Android versions (pre-Oreo), use more compatible algorithms
+                    config["kex"] = "diffie-hellman-group1-sha1,diffie-hellman-group14-sha1"
+                    config["server_host_key"] = "ssh-rsa,ssh-dss"
+                    config["cipher.s2c"] = "aes128-ctr,aes128-cbc,3des-ctr,3des-cbc,blowfish-cbc"
+                    config["cipher.c2s"] = "aes128-ctr,aes128-cbc,3des-ctr,3des-cbc,blowfish-cbc"
+                    config["mac.s2c"] = "hmac-md5,hmac-sha1,hmac-sha2-256,hmac-sha1-96,hmac-md5-96"
+                    config["mac.c2s"] = "hmac-md5,hmac-sha1,hmac-sha2-256,hmac-sha1-96,hmac-md5-96"
+                    AAPLog.append("Using legacy crypto algorithms for Android ${Build.VERSION.SDK_INT}")
+                } else {
+                    // For newer Android versions, use modern algorithms
+                    config["kex"] = "diffie-hellman-group14-sha1,diffie-hellman-group-exchange-sha256,ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521"
+                    config["server_host_key"] = "ssh-rsa,rsa-sha2-256,rsa-sha2-512,ecdsa-sha2-nistp256"
+                    config["cipher.s2c"] = "aes128-ctr,aes128-cbc,aes256-ctr,aes256-cbc,3des-ctr,3des-cbc"
+                    config["cipher.c2s"] = "aes128-ctr,aes128-cbc,aes256-ctr,aes256-cbc,3des-ctr,3des-cbc"
+                    config["mac.s2c"] = "hmac-sha1,hmac-sha2-256,hmac-md5"
+                    config["mac.c2s"] = "hmac-sha1,hmac-sha2-256,hmac-md5"
+                    AAPLog.append("Using modern crypto algorithms for Android ${Build.VERSION.SDK_INT}")
+                }
 
-                    // Set host key checking
-                    val storedKey = prefs.getString(SERVER_KEY, null)
-                    if (storedKey.isNullOrBlank()) {
-                        // No server key stored, accept new one and store it
-                        put("StrictHostKeyChecking", "no")
-                        AAPLog.append("No server key found for $sshHost. Accepting new key.")
-                    } else {
-                        // Server key exists, use it for strict checking
-                        put("StrictHostKeyChecking", "yes")
+                // Configure host key checking
+                if (storedKey.isNullOrBlank()) {
+                    config["StrictHostKeyChecking"] = "no"
+                    AAPLog.append("No server key found for $sshHost. Accepting new key.")
+                } else {
+                    config["StrictHostKeyChecking"] = "yes"
+                    try {
+                        val knownHostsEntry = "$sshHost $storedKey"
+                        jsch.setKnownHosts(ByteArrayInputStream(knownHostsEntry.toByteArray()))
+                        AAPLog.append("Using stored server key for $sshHost")
+                    } catch (e: Exception) {
+                        AAPLog.append("Error setting known hosts: ${e.message}")
+                        config["StrictHostKeyChecking"] = "no"
                     }
                 }
 
                 // Password authentication
                 session?.setPassword(sshPassword)
-                val storedKey = prefs.getString(SERVER_KEY, null)
-                
-                if (storedKey.isNullOrBlank()) {
-                    // No server key stored, accept new one and store it
-                    config["StrictHostKeyChecking"] = "no"
-                    AAPLog.append("No server key found for $sshHost. Accepting new key.")
-                } else {
-                    // Server key exists, use it for strict checking
-                    config["StrictHostKeyChecking"] = "yes"
-                    // JSch's setKnownHosts expects a known_hosts file format.
-                    // We need to provide the host along with the key.
-                    val knownHostsEntry = "$sshHost $storedKey"
-                    jsch.setKnownHosts(ByteArrayInputStream(knownHostsEntry.toByteArray()))
-                    AAPLog.append("Using stored server key for $sshHost: $storedKey")
-                }
                 session?.setConfig(config)
 
                 // Connect to the server
@@ -152,6 +143,19 @@ class SSHTunnelManager(
                         onError?.invoke("Server key changed! Potential security issue. Clear key to accept new.")
                     } else {
                         AAPLog.append("SSH tunnel failed: ${e.message}")
+                        // Log the actual config being used
+                        val configDump = config.entries.joinToString("\n") { "${it.key}=${it.value}" }
+                        AAPLog.append("Current SSH config:\n$configDump")
+                        // Log available algorithms
+                        try {
+                            val availableAlgorithms = session?.config?.let { cfg ->
+                                listOf("kex", "server_host_key", "cipher.s2c", "cipher.c2s", "mac.s2c", "mac.c2s")
+                                    .joinToString("\n") { alg -> "$alg=${cfg[alg]}" }
+                            } ?: "No session config available"
+                            AAPLog.append("Available algorithms:\n$availableAlgorithms")
+                        } catch (e: Exception) {
+                            AAPLog.append("Failed to get available algorithms: ${e.message}")
+                        }
                     }
                     ConnectionStateHolder.setState(ConnectionState.DISCONNECTED)
                 }
