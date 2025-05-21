@@ -7,6 +7,7 @@ import com.jcraft.jsch.HostKeyRepository
 import com.jcraft.jsch.JSch
 import com.jcraft.jsch.JSchException
 import com.jcraft.jsch.Session
+import java.io.ByteArrayInputStream
 import kotlinx.coroutines.*
 import java.util.Properties
 
@@ -87,7 +88,7 @@ class SSHTunnelManager(
                 // Now configure with proper key checking
                 if (storedKey != null) {
                     config["StrictHostKeyChecking"] = "yes"
-                    jsch.setKnownHosts(byteArrayInputStream(storedKey.toByteArray()))
+                    jsch.setKnownHosts(ByteArrayInputStream(storedKey.toByteArray()))
                 }
                 session?.setConfig(config)
 
