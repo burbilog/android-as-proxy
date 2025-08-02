@@ -2,11 +2,13 @@ package net.isaeff.android.asproxy
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.os.Build
 import com.jcraft.jsch.JSch
 import com.jcraft.jsch.JSchException
 import com.jcraft.jsch.Session
 import kotlinx.coroutines.*
 import java.io.ByteArrayInputStream
+import java.security.AlgorithmParameters
 import java.util.Properties
 
 class SSHTunnelManager(
@@ -43,6 +45,16 @@ class SSHTunnelManager(
         val config: Properties
     )
 
+    private fun ecAlgorithmsAvailable(): Boolean {
+        return try {
+            // Some emulators on old API levels lack EC AlgorithmParameters
+            AlgorithmParameters.getInstance("EC")
+            true
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
     private fun buildProfiles(jsch: JSch, storedKey: String?): List<AlgoProfile> {
         val commonHostKeyProps: (Properties) -> Unit = { p ->
             if (storedKey.isNullOrBlank()) {
@@ -52,9 +64,13 @@ class SSHTunnelManager(
                 val knownHostsEntry = "$sshHost $storedKey"
                 jsch.setKnownHosts(ByteArrayInputStream(knownHostsEntry.toByteArray()))
             }
+            // Avoid failing on newer servers that disable MD5 MACs; list stronger first
+            p["PreferredAuthentications"] = "password"
         }
 
-        // Modern EC-first profile
+        val supportsEC = ecAlgorithmsAvailable()
+
+        // Modern EC-first profile (only if EC available)
         val modern = Properties().apply {
             put("kex", "diffie-hellman-group-exchange-sha256,ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521,diffie-hellman-group14-sha1")
             put("server_host_key", "ecdsa-sha2-nistp256,rsa-sha2-512,rsa-sha2-256,ssh-rsa")
@@ -76,32 +92,40 @@ class SSHTunnelManager(
             commonHostKeyProps(this)
         }
 
-        // Legacy catch-all (use only if needed)
+        // Compatibility profile for older Android and servers (no EC, safer than very legacy)
+        val compat = Properties().apply {
+            put("kex", "diffie-hellman-group-exchange-sha256,diffie-hellman-group14-sha1")
+            put("server_host_key", "rsa-sha2-256,ssh-rsa")
+            put("cipher.s2c", "aes128-ctr,aes256-ctr,3des-ctr,aes128-cbc,3des-cbc")
+            put("cipher.c2s", "aes128-ctr,aes256-ctr,3des-ctr,aes128-cbc,3des-cbc")
+            put("mac.s2c", "hmac-sha2-256,hmac-sha1")
+            put("mac.c2s", "hmac-sha2-256,hmac-sha1")
+            commonHostKeyProps(this)
+        }
+
+        // Very legacy catch-all (use only if needed)
         val legacy = Properties().apply {
             put("kex", "diffie-hellman-group14-sha1,diffie-hellman-group1-sha1")
-            put("server_host_key", "ssh-rsa,ssh-dss")
-            put("cipher.s2c", "aes128-ctr,aes128-cbc,3des-ctr,3des-cbc,blowfish-cbc")
-            put("cipher.c2s", "aes128-ctr,aes128-cbc,3des-ctr,3des-cbc,blowfish-cbc")
-            put("mac.s2c", "hmac-md5,hmac-sha1,hmac-sha2-256,hmac-sha1-96,hmac-md5-96")
-            put("mac.c2s", "hmac-md5,hmac-sha1,hmac-sha2-256,hmac-sha1-96,hmac-md5-96")
+            put("server_host_key", "ssh-rsa") // Prefer to avoid ssh-dss
+            put("cipher.s2c", "aes128-ctr,aes128-cbc,3des-ctr,3des-cbc")
+            put("cipher.c2s", "aes128-ctr,aes128-cbc,3des-ctr,3des-cbc")
+            put("mac.s2c", "hmac-sha1")
+            put("mac.c2s", "hmac-sha1")
             commonHostKeyProps(this)
         }
 
         val profiles = mutableListOf<AlgoProfile>()
-        // If we have a previously working profile, try it first
         val last = prefs.getString(PREF_WORKING_PROFILE, null)
-        val all = listOf(
-            AlgoProfile("modern", "Modern EC + RSA", modern),
-            AlgoProfile("rsa", "RSA-centric", rsaCentric),
-            AlgoProfile("legacy", "Legacy compatibility", legacy),
-        )
+        val all = buildList {
+            if (supportsEC) add(AlgoProfile("modern", "Modern EC + RSA", modern))
+            add(AlgoProfile("rsa", "RSA-centric", rsaCentric))
+            add(AlgoProfile("compat", "Compatibility (no EC, safe)", compat))
+            add(AlgoProfile("legacy", "Legacy compatibility", legacy))
+        }
         if (last != null) {
             val preferred = all.find { it.key == last }
-            if (preferred != null) {
-                profiles.add(preferred)
-            }
+            if (preferred != null) profiles.add(preferred)
         }
-        // Add the rest in order (without duplicating)
         all.forEach { if (profiles.none { p -> p.key == it.key }) profiles.add(it) }
         return profiles
     }
@@ -113,6 +137,56 @@ class SSHTunnelManager(
         AAPLog.append("Attempting SSH with profile '${profile.key}' (${profile.desc})")
         s.connect(30000)
         return s
+    }
+
+    private fun setupRemoteForwardingWithFallbacks(sess: Session) {
+        // Ensure any previous forward is cleared first
+        try {
+            sess.delPortForwardingR(remotePort)
+            AAPLog.append("Cleared existing remote port forwarding on $remotePort (if any)")
+        } catch (_: Throwable) {
+            // ignore - likely not set
+        }
+
+        val bindCandidates = listOf(
+            "127.0.0.1",
+            "localhost",
+            // Empty host lets server default decide; some sshd configs accept this
+            "",
+            // As a last resort (requires GatewayPorts clientspecified or yes):
+            "0.0.0.0"
+        )
+
+        var lastError: Throwable? = null
+        for (bind in bindCandidates) {
+            try {
+                if (bind.isEmpty()) {
+                    AAPLog.append("Trying remote forward: [default bind] $remotePort -> $localHost:$localPort")
+                    sess.setPortForwardingR(remotePort, localHost, localPort)
+                } else {
+                    AAPLog.append("Trying remote forward: $bind:$remotePort -> $localHost:$localPort")
+                    sess.setPortForwardingR(bind, remotePort, localHost, localPort)
+                }
+                AAPLog.append("Remote port forwarding established on ${if (bind.isEmpty()) "[default]" else bind}:$remotePort")
+                return
+            } catch (e: Throwable) {
+                lastError = e
+                AAPLog.append("Remote forward failed for bind '${if (bind.isEmpty()) "default" else bind}': ${e.message}")
+                // If it's "address already in use", try to delete and retry once
+                if (e.message?.contains("administratively prohibited") == true ||
+                    e.message?.contains("remote port forwarding failed") == true ||
+                    e.message?.contains("address already in use") == true
+                ) {
+                    try {
+                        sess.delPortForwardingR(remotePort)
+                        AAPLog.append("Attempted to clear remote forwarding after failure; retrying...")
+                    } catch (_: Throwable) {
+                        // ignore
+                    }
+                }
+            }
+        }
+        throw JSchException(lastError?.message ?: "remote port forwarding failed")
     }
 
     fun startSSHTunnel() {
@@ -170,8 +244,8 @@ class SSHTunnelManager(
                     AAPLog.append("SSH connected using profile '${it.key}' (${it.desc})")
                 }
 
-                // Set up remote port forwarding
-                session?.setPortForwardingR(remotePort, localHost, localPort)
+                // Set up remote port forwarding with fallbacks
+                session?.let { setupRemoteForwardingWithFallbacks(it) }
 
                 withContext(Dispatchers.Main) {
                     AAPLog.append("SSH tunnel started successfully")
@@ -264,7 +338,8 @@ class SSHTunnelManager(
                 AAPLog.append("SSH reconnected using profile '${it.key}' (${it.desc})")
             }
 
-            session?.setPortForwardingR(remotePort, localHost, localPort)
+            // Re-establish remote port forwarding with fallbacks
+            session?.let { setupRemoteForwardingWithFallbacks(it) }
 
             withContext(Dispatchers.Main) {
                 AAPLog.append("SSH tunnel reconnected successfully")
@@ -288,6 +363,12 @@ class SSHTunnelManager(
 
                 tunnelJob?.cancel()
                 tunnelJob = null
+
+                try {
+                    session?.delPortForwardingR(remotePort)
+                } catch (_: Throwable) {
+                    // ignore
+                }
 
                 session?.disconnect()
                 session = null
