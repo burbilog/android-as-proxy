@@ -17,11 +17,22 @@ object ConnectionStateHolder {
     // Expose the state as an immutable StateFlow for observation
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
 
+    // Traffic counters (bytes in, bytes out) since the current session started
+    private val _trafficBytes = MutableStateFlow(0L to 0L)
+    val trafficBytes: StateFlow<Pair<Long, Long>> = _trafficBytes.asStateFlow()
+
     /**
      * Updates the current connection state.
      * @param state The new state to set.
      */
     fun setState(state: ConnectionState) {
         _connectionState.value = state
+    }
+
+    /**
+     * Updates current traffic counters (in/out) in bytes.
+     */
+    fun setTrafficBytes(rxBytes: Long, txBytes: Long) {
+        _trafficBytes.value = rxBytes to txBytes
     }
 }

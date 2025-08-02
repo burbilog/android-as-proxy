@@ -10,6 +10,8 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import org.bbottema.javasocksproxyserver.SocksServer
+import android.net.TrafficStats
+import kotlinx.coroutines.*
 
 class SocksForegroundService : Service() {
 
@@ -19,6 +21,11 @@ class SocksForegroundService : Service() {
 
     private var socksServer: SocksServer? = null
     private var sshTunnelManager: SSHTunnelManager? = null // Make it nullable
+
+    // Traffic monitoring
+    private var baseRx: Long = 0L
+    private var baseTx: Long = 0L
+    private var trafficJob: Job? = null
 
     override fun onBind(intent: Intent?): IBinder? {
         // Not a bound service
@@ -76,6 +83,18 @@ class SocksForegroundService : Service() {
             startForeground(NOTIFICATION_ID, notification)
             AAPLog.append("Foreground service started with notification")
             ConnectionStateHolder.setState(ConnectionState.CONNECTING) // Set state to connecting early
+
+            // Initialize traffic baseline and launch monitoring coroutine
+            baseRx = TrafficStats.getUidRxBytes(android.os.Process.myUid())
+            baseTx = TrafficStats.getUidTxBytes(android.os.Process.myUid())
+            trafficJob = CoroutineScope(Dispatchers.IO).launch {
+                while (isActive) {
+                    val rx = TrafficStats.getUidRxBytes(android.os.Process.myUid()) - baseRx
+                    val tx = TrafficStats.getUidTxBytes(android.os.Process.myUid()) - baseTx
+                    ConnectionStateHolder.setTrafficBytes(rx, tx)
+                    delay(1000)
+                }
+            }
         } catch (e: Exception) {
             AAPLog.append("Failed to start foreground: ${e.message}")
             ConnectionStateHolder.setState(ConnectionState.DISCONNECTED)
@@ -131,6 +150,9 @@ class SocksForegroundService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         AAPLog.append("Service onDestroy()")
+        // Stop traffic monitoring
+        trafficJob?.cancel()
+        trafficJob = null
         // Stop jsocks proxy
         try {
             stopJsocks()

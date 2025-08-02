@@ -94,6 +94,10 @@ class MainActivity : ComponentActivity() {
 fun MainScreen() {
     val context = LocalContext.current
 
+    // Helper to format byte counts nicely (KB / MB / GB)
+    fun formatBytes(value: Long): String =
+        android.text.format.Formatter.formatShortFileSize(context, value)
+
     // Get SharedPreferences instance once and remember it
     val prefs = remember { context.getSharedPreferences("aap_prefs", Context.MODE_PRIVATE) }
 
@@ -110,7 +114,9 @@ fun MainScreen() {
 
     // Observe the connection state from the shared holder
     val connectionState by ConnectionStateHolder.connectionState.collectAsState()
-
+    // Observe traffic bytes (rx, tx)
+    val traffic by ConnectionStateHolder.trafficBytes.collectAsState()
+ 
     // Removed Broadcast receiver logic as state is now observed from ConnectionStateHolder
 
     // Initial load of saved values from SharedPreferences
@@ -175,27 +181,34 @@ fun MainScreen() {
         topBar = {
             TopAppBar(
                 title = {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("Android As Proxy")
+                    Column {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Android As Proxy")
+                            Text(
+                                text = when (connectionState) {
+                                    ConnectionState.CONNECTED -> "● Connected"
+                                    ConnectionState.DISCONNECTED -> "● Disconnected"
+                                    ConnectionState.CONNECTING -> "● Connecting..."
+                                    ConnectionState.DISCONNECTING -> "● Disconnecting..."
+                                },
+                                color = when (connectionState) {
+                                    ConnectionState.CONNECTED -> Color(0xFF4CAF50)
+                                    ConnectionState.DISCONNECTED -> Color(0xFFF44336)
+                                    ConnectionState.CONNECTING -> Color(0xFFFFA000)
+                                    ConnectionState.DISCONNECTING -> Color(0xFFFFA000)
+                                },
+                                style = MaterialTheme.typography.titleMedium,
+                                modifier = Modifier.padding(end = 16.dp)
+                            )
+                        }
                         Text(
-                            text = when (connectionState) {
-                                ConnectionState.CONNECTED -> "● Connected"
-                                ConnectionState.DISCONNECTED -> "● Disconnected"
-                                ConnectionState.CONNECTING -> "● Connecting..."
-                                ConnectionState.DISCONNECTING -> "● Disconnecting..."
-                            },
-                            color = when (connectionState) {
-                                ConnectionState.CONNECTED -> Color(0xFF4CAF50) // Material Green 500
-                                ConnectionState.DISCONNECTED -> Color(0xFFF44336) // Material Red 500
-                                ConnectionState.CONNECTING -> Color(0xFFFFA000)  // Amber 700
-                                ConnectionState.DISCONNECTING -> Color(0xFFFFA000)
-                            },
-                            style = MaterialTheme.typography.titleMedium,
-                            modifier = Modifier.padding(end = 16.dp)
+                            text = "Traffic ${formatBytes(traffic.first)} in / ${formatBytes(traffic.second)} out",
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(top = 2.dp)
                         )
                     }
                 }
