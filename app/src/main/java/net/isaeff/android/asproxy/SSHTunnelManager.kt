@@ -54,17 +54,17 @@ class SSHTunnelManager(
         }
     }
 
-    private fun configureJschAlgorithms(jsch: JSch) {
-        // Ensure RSA-SHA2 signature support and known mappings exist in this JSch instance.
-        // Some JSch builds may not have these defaults on older Android.
+    private fun configureJschAlgorithms() {
+        // Ensure RSA-SHA2 signature support and known mappings exist.
+        // Use static JSch.setConfig for broad compatibility across JSch variants.
         try {
-            jsch.setConfig("server_host_key", "ecdsa-sha2-nistp256,rsa-sha2-512,rsa-sha2-256,ssh-rsa")
+            JSch.setConfig("server_host_key", "ecdsa-sha2-nistp256,rsa-sha2-512,rsa-sha2-256,ssh-rsa")
             // Map signature names explicitly
-            jsch.setConfig("signature.rsa-sha2-256", "com.jcraft.jsch.jce.SignatureRSA256")
-            jsch.setConfig("signature.rsa-sha2-512", "com.jcraft.jsch.jce.SignatureRSA512")
-            jsch.setConfig("signature.rsa", "com.jcraft.jsch.jce.SignatureRSA")
+            JSch.setConfig("signature.rsa-sha2-256", "com.jcraft.jsch.jce.SignatureRSA256")
+            JSch.setConfig("signature.rsa-sha2-512", "com.jcraft.jsch.jce.SignatureRSA512")
+            JSch.setConfig("signature.rsa", "com.jcraft.jsch.jce.SignatureRSA")
             // KEX mappings (leave defaults but ensure availability order is sane)
-            jsch.setConfig("kex", "diffie-hellman-group-exchange-sha256,ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521,diffie-hellman-group14-sha1")
+            JSch.setConfig("kex", "diffie-hellman-group-exchange-sha256,ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521,diffie-hellman-group14-sha1")
         } catch (_: Throwable) {
             // Best-effort; if the class names are not present, keep going with defaults
         }
@@ -229,7 +229,7 @@ class SSHTunnelManager(
                 ConnectionStateHolder.setState(ConnectionState.CONNECTING)
 
                 val jsch = JSch()
-                configureJschAlgorithms(jsch)
+                configureJschAlgorithms()
                 // For key-based authentication:
                 // jsch.addIdentity("/path/to/private/key")
 
@@ -324,7 +324,7 @@ class SSHTunnelManager(
             session?.disconnect()
 
             val jsch = JSch()
-            configureJschAlgorithms(jsch)
+            configureJschAlgorithms()
             val storedKey = prefs.getString(SERVER_KEY, null)
             val profiles = buildProfiles(jsch, storedKey)
 
@@ -357,7 +357,6 @@ class SSHTunnelManager(
                 if (hostKey != null) {
                     val keyString = "${hostKey.type} ${hostKey.key}"
                     prefs.edit().putString(SERVER_KEY, keyString).apply()
-                    AAPLog.append("Stored new server key for $sshHost during reconnect: $keyString")
                 } else {
                     AAPLog.append("Warning: No host key received after reconnect for $sshHost.")
                 }
