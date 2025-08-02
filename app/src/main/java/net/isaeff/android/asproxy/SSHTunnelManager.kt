@@ -23,6 +23,7 @@ class SSHTunnelManager(
     companion object {
         private const val PREFS_NAME = "aap_prefs"
         private const val SERVER_KEY = "server_key"
+        private const val PREF_WORKING_PROFILE = "ssh_working_profile"
     }
 
     private val prefs: SharedPreferences by lazy {
@@ -35,6 +36,85 @@ class SSHTunnelManager(
 
     // Make config accessible to both try and catch blocks
     private var connectConfig: Properties? = null
+
+    // Define algorithm profiles from strongest to broadest compatibility
+    private data class AlgoProfile(
+        val key: String,
+        val desc: String,
+        val config: Properties
+    )
+
+    private fun buildProfiles(jsch: JSch, storedKey: String?): List<AlgoProfile> {
+        val commonHostKeyProps: (Properties) -> Unit = { p ->
+            if (storedKey.isNullOrBlank()) {
+                p["StrictHostKeyChecking"] = "no"
+            } else {
+                p["StrictHostKeyChecking"] = "yes"
+                val knownHostsEntry = "$sshHost $storedKey"
+                jsch.setKnownHosts(ByteArrayInputStream(knownHostsEntry.toByteArray()))
+            }
+        }
+
+        // Modern EC-first profile
+        val modern = Properties().apply {
+            put("kex", "diffie-hellman-group-exchange-sha256,ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521,diffie-hellman-group14-sha1")
+            put("server_host_key", "ecdsa-sha2-nistp256,rsa-sha2-512,rsa-sha2-256,ssh-rsa")
+            put("cipher.s2c", "aes256-ctr,aes128-ctr,aes256-cbc,aes128-cbc,3des-ctr,3des-cbc")
+            put("cipher.c2s", "aes256-ctr,aes128-ctr,aes256-cbc,aes128-cbc,3des-ctr,3des-cbc")
+            put("mac.s2c", "hmac-sha2-256,hmac-sha1,hmac-md5")
+            put("mac.c2s", "hmac-sha2-256,hmac-sha1,hmac-md5")
+            commonHostKeyProps(this)
+        }
+
+        // RSA-centric profile without EC
+        val rsaCentric = Properties().apply {
+            put("kex", "diffie-hellman-group-exchange-sha256,diffie-hellman-group14-sha1")
+            put("server_host_key", "rsa-sha2-512,rsa-sha2-256,ssh-rsa")
+            put("cipher.s2c", "aes256-ctr,aes128-ctr,aes256-cbc,aes128-cbc,3des-ctr,3des-cbc")
+            put("cipher.c2s", "aes256-ctr,aes128-ctr,aes256-cbc,aes128-cbc,3des-ctr,3des-cbc")
+            put("mac.s2c", "hmac-sha2-256,hmac-sha1,hmac-md5")
+            put("mac.c2s", "hmac-sha2-256,hmac-sha1,hmac-md5")
+            commonHostKeyProps(this)
+        }
+
+        // Legacy catch-all (use only if needed)
+        val legacy = Properties().apply {
+            put("kex", "diffie-hellman-group14-sha1,diffie-hellman-group1-sha1")
+            put("server_host_key", "ssh-rsa,ssh-dss")
+            put("cipher.s2c", "aes128-ctr,aes128-cbc,3des-ctr,3des-cbc,blowfish-cbc")
+            put("cipher.c2s", "aes128-ctr,aes128-cbc,3des-ctr,3des-cbc,blowfish-cbc")
+            put("mac.s2c", "hmac-md5,hmac-sha1,hmac-sha2-256,hmac-sha1-96,hmac-md5-96")
+            put("mac.c2s", "hmac-md5,hmac-sha1,hmac-sha2-256,hmac-sha1-96,hmac-md5-96")
+            commonHostKeyProps(this)
+        }
+
+        val profiles = mutableListOf<AlgoProfile>()
+        // If we have a previously working profile, try it first
+        val last = prefs.getString(PREF_WORKING_PROFILE, null)
+        val all = listOf(
+            AlgoProfile("modern", "Modern EC + RSA", modern),
+            AlgoProfile("rsa", "RSA-centric", rsaCentric),
+            AlgoProfile("legacy", "Legacy compatibility", legacy),
+        )
+        if (last != null) {
+            val preferred = all.find { it.key == last }
+            if (preferred != null) {
+                profiles.add(preferred)
+            }
+        }
+        // Add the rest in order (without duplicating)
+        all.forEach { if (profiles.none { p -> p.key == it.key }) profiles.add(it) }
+        return profiles
+    }
+
+    private fun tryConnectWithProfile(profile: AlgoProfile, jsch: JSch): Session {
+        val s = jsch.getSession(sshUser, sshHost, sshPort)
+        s.setPassword(sshPassword)
+        s.setConfig(profile.config)
+        AAPLog.append("Attempting SSH with profile '${profile.key}' (${profile.desc})")
+        s.connect(30000)
+        return s
+    }
 
     fun startSSHTunnel() {
         // Cancel any existing job
@@ -50,53 +130,28 @@ class SSHTunnelManager(
                 // For key-based authentication:
                 // jsch.addIdentity("/path/to/private/key")
 
-                // Initialize session
-                session = jsch.getSession(sshUser, sshHost, sshPort)
-
-                // Configure crypto algorithms and host key checking
                 val storedKey = prefs.getString(SERVER_KEY, null)
-                connectConfig = Properties().apply {
-                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-                        put("kex", "diffie-hellman-group1-sha1,diffie-hellman-group14-sha1")
-                        put("server_host_key", "ssh-rsa,ssh-dss")
-                        put("cipher.s2c", "aes128-ctr,aes128-cbc,3des-ctr,3des-cbc,blowfish-cbc")
-                        put("cipher.c2s", "aes128-ctr,aes128-cbc,3des-ctr,3des-cbc,blowfish-cbc")
-                        put("mac.s2c", "hmac-md5,hmac-sha1,hmac-sha2-256,hmac-sha1-96,hmac-md5-96")
-                        put("mac.c2s", "hmac-md5,hmac-sha1,hmac-sha2-256,hmac-sha1-96,hmac-md5-96")
-                        AAPLog.append("Using legacy crypto algorithms for Android ${Build.VERSION.SDK_INT}")
-                    } else {
-                        // Include EC algorithms where supported
-                        put("kex", "diffie-hellman-group14-sha1,diffie-hellman-group-exchange-sha256,ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521")
-                        put("server_host_key", "ssh-rsa,rsa-sha2-256,rsa-sha2-512,ecdsa-sha2-nistp256")
-                        put("cipher.s2c", "aes128-ctr,aes128-cbc,aes256-ctr,aes256-cbc,3des-ctr,3des-cbc")
-                        put("cipher.c2s", "aes128-ctr,aes128-cbc,aes256-ctr,aes256-cbc,3des-ctr,3des-cbc")
-                        put("mac.s2c", "hmac-sha1,hmac-sha2-256,hmac-md5")
-                        put("mac.c2s", "hmac-sha1,hmac-sha2-256,hmac-md5")
-                        AAPLog.append("Using modern crypto algorithms for Android ${Build.VERSION.SDK_INT}")
-                    }
+                val profiles = buildProfiles(jsch, storedKey)
 
-                    if (storedKey.isNullOrBlank()) {
-                        put("StrictHostKeyChecking", "no")
-                        AAPLog.append("No server key found for $sshHost. Accepting new key.")
-                    } else {
-                        put("StrictHostKeyChecking", "yes")
-                        try {
-                            val knownHostsEntry = "$sshHost $storedKey"
-                            jsch.setKnownHosts(ByteArrayInputStream(knownHostsEntry.toByteArray()))
-                            AAPLog.append("Using stored server key for $sshHost")
-                        } catch (e: Exception) {
-                            AAPLog.append("Error setting known hosts: ${e.message}")
-                            put("StrictHostKeyChecking", "no")
-                        }
+                // Attempt connection using the profiles in order
+                var connectedSession: Session? = null
+                var usedProfile: AlgoProfile? = null
+                var lastError: Throwable? = null
+                for (p in profiles) {
+                    try {
+                        connectConfig = p.config
+                        connectedSession = tryConnectWithProfile(p, jsch)
+                        usedProfile = p
+                        break
+                    } catch (e: Throwable) {
+                        lastError = e
+                        AAPLog.append("Profile '${p.key}' failed: ${e.message}")
                     }
                 }
-
-                // Password authentication
-                session?.setPassword(sshPassword)
-                session?.setConfig(connectConfig)
-
-                // Connect to the server
-                session?.connect(30000) // 30 second timeout
+                if (connectedSession == null) {
+                    throw lastError ?: JSchException("SSH connect failed for all profiles")
+                }
+                session = connectedSession
 
                 // If a new key was accepted, store it now
                 if (storedKey.isNullOrBlank()) {
@@ -108,6 +163,12 @@ class SSHTunnelManager(
                     } else {
                         AAPLog.append("Warning: No host key received after connection for $sshHost.")
                     }
+                }
+
+                // Remember which profile worked
+                usedProfile?.let {
+                    prefs.edit().putString(PREF_WORKING_PROFILE, it.key).apply()
+                    AAPLog.append("SSH connected using profile '${it.key}' (${it.desc})")
                 }
 
                 // Set up remote port forwarding
@@ -170,24 +231,32 @@ class SSHTunnelManager(
             session?.disconnect()
 
             val jsch = JSch()
-            session = jsch.getSession(sshUser, sshHost, sshPort)
-            session?.setPassword(sshPassword)
-
             val storedKey = prefs.getString(SERVER_KEY, null)
-            val cfg = Properties().apply {
-                if (storedKey.isNullOrBlank()) {
-                    this["StrictHostKeyChecking"] = "no"
-                    AAPLog.append("No server key found for $sshHost during reconnect. Accepting new key.")
-                } else {
-                    this["StrictHostKeyChecking"] = "yes"
-                    val knownHostsEntry = "$sshHost $storedKey"
-                    jsch.setKnownHosts(ByteArrayInputStream(knownHostsEntry.toByteArray()))
-                    AAPLog.append("Using stored server key for $sshHost during reconnect: $storedKey")
+            val profiles = buildProfiles(jsch, storedKey)
+
+            var connectedSession: Session? = null
+            var usedProfile: AlgoProfile? = null
+            var lastError: Throwable? = null
+            for (p in profiles) {
+                try {
+                    connectConfig = p.config
+                    val s = jsch.getSession(sshUser, sshHost, sshPort)
+                    s.setPassword(sshPassword)
+                    s.setConfig(p.config)
+                    AAPLog.append("Reconnecting with profile '${p.key}' (${p.desc})")
+                    s.connect(30000)
+                    connectedSession = s
+                    usedProfile = p
+                    break
+                } catch (e: Throwable) {
+                    lastError = e
+                    AAPLog.append("Reconnect profile '${p.key}' failed: ${e.message}")
                 }
             }
-            session?.setConfig(cfg)
-
-            session?.connect(30000)
+            if (connectedSession == null) {
+                throw lastError ?: JSchException("SSH reconnect failed for all profiles")
+            }
+            session = connectedSession
 
             if (storedKey.isNullOrBlank()) {
                 val hostKey = session?.hostKey
@@ -198,6 +267,12 @@ class SSHTunnelManager(
                 } else {
                     AAPLog.append("Warning: No host key received after reconnect for $sshHost.")
                 }
+            }
+
+            // Remember which profile worked
+            usedProfile?.let {
+                prefs.edit().putString(PREF_WORKING_PROFILE, it.key).apply()
+                AAPLog.append("SSH reconnected using profile '${it.key}' (${it.desc})")
             }
 
             session?.setPortForwardingR(remotePort, localHost, localPort)
