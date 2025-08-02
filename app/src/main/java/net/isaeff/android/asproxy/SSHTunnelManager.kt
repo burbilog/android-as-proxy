@@ -171,7 +171,7 @@ class SSHTunnelManager(
         // Attempt to clear possible host-bound entries too
         listOf("127.0.0.1", "localhost", "0.0.0.0", "::").forEach { host ->
             try {
-                sess.delPortForwardingR("$host:$remotePort")
+                sess.delPortForwardingR(host, remotePort)
                 AAPLog.append("Cleared existing remote port forwarding on $host:$remotePort (if any)")
             } catch (_: Throwable) { }
         }
@@ -210,7 +210,7 @@ class SSHTunnelManager(
                     e.message?.contains("address already in use", ignoreCase = true) == true
                 ) {
                     try { sess.delPortForwardingR(remotePort) } catch (_: Throwable) {}
-                    try { if (bind.isNotEmpty()) sess.delPortForwardingR("$bind:$remotePort") } catch (_: Throwable) {}
+                    try { if (bind.isNotEmpty()) sess.delPortForwardingR(bind, remotePort) } catch (_: Throwable) {}
                     AAPLog.append("Attempted to clear remote forwarding after failure; will try next candidate...")
                 }
             }
@@ -401,7 +401,7 @@ class SSHTunnelManager(
                 }
                 // Attempt to clean bound entries too
                 listOf("127.0.0.1", "localhost", "0.0.0.0", "::", "::1").forEach { host ->
-                    try { session?.delPortForwardingR("$host:$remotePort") } catch (_: Throwable) {}
+                    try { session?.delPortForwardingR(host, remotePort) } catch (_: Throwable) {}
                 }
 
                 session?.disconnect()
