@@ -3,13 +3,11 @@ package net.isaeff.android.asproxy
 import android.content.Context
 import android.content.SharedPreferences
 import android.os.Build
-import com.jcraft.jsch.HostKey
-import com.jcraft.jsch.HostKeyRepository
 import com.jcraft.jsch.JSch
 import com.jcraft.jsch.JSchException
 import com.jcraft.jsch.Session
-import java.io.ByteArrayInputStream
 import kotlinx.coroutines.*
+import java.io.ByteArrayInputStream
 import java.util.Properties
 
 class SSHTunnelManager(
@@ -30,11 +28,13 @@ class SSHTunnelManager(
     private val prefs: SharedPreferences by lazy {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     }
-    // Removed currentHost as it was causing unintended key clearing
     var onError: ((String) -> Unit)? = null
     private var session: Session? = null
     private var tunnelJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    // Make config accessible to both try and catch blocks
+    private var connectConfig: Properties? = null
 
     fun startSSHTunnel() {
         // Cancel any existing job
@@ -44,7 +44,7 @@ class SSHTunnelManager(
         tunnelJob = scope.launch {
             try {
                 AAPLog.append("Starting SSH tunnel to $sshHost:$sshPort for user $sshUser, forwarding remote $remotePort to local $localHost:$localPort")
-                ConnectionStateHolder.setState(ConnectionState.CONNECTING) // Set state to connecting
+                ConnectionStateHolder.setState(ConnectionState.CONNECTING)
 
                 val jsch = JSch()
                 // For key-based authentication:
@@ -55,10 +55,8 @@ class SSHTunnelManager(
 
                 // Configure crypto algorithms and host key checking
                 val storedKey = prefs.getString(SERVER_KEY, null)
-                val config = Properties().apply {
-                    // Set crypto algorithms based on Android version
+                connectConfig = Properties().apply {
                     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-                        // For older Android versions (pre-Oreo), use more compatible algorithms
                         put("kex", "diffie-hellman-group1-sha1,diffie-hellman-group14-sha1")
                         put("server_host_key", "ssh-rsa,ssh-dss")
                         put("cipher.s2c", "aes128-ctr,aes128-cbc,3des-ctr,3des-cbc,blowfish-cbc")
@@ -67,7 +65,7 @@ class SSHTunnelManager(
                         put("mac.c2s", "hmac-md5,hmac-sha1,hmac-sha2-256,hmac-sha1-96,hmac-md5-96")
                         AAPLog.append("Using legacy crypto algorithms for Android ${Build.VERSION.SDK_INT}")
                     } else {
-                        // For newer Android versions, use modern algorithms
+                        // Include EC algorithms where supported
                         put("kex", "diffie-hellman-group14-sha1,diffie-hellman-group-exchange-sha256,ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521")
                         put("server_host_key", "ssh-rsa,rsa-sha2-256,rsa-sha2-512,ecdsa-sha2-nistp256")
                         put("cipher.s2c", "aes128-ctr,aes128-cbc,aes256-ctr,aes256-cbc,3des-ctr,3des-cbc")
@@ -77,7 +75,6 @@ class SSHTunnelManager(
                         AAPLog.append("Using modern crypto algorithms for Android ${Build.VERSION.SDK_INT}")
                     }
 
-                    // Configure host key checking
                     if (storedKey.isNullOrBlank()) {
                         put("StrictHostKeyChecking", "no")
                         AAPLog.append("No server key found for $sshHost. Accepting new key.")
@@ -96,7 +93,7 @@ class SSHTunnelManager(
 
                 // Password authentication
                 session?.setPassword(sshPassword)
-                session?.setConfig(config)
+                session?.setConfig(connectConfig)
 
                 // Connect to the server
                 session?.connect(30000) // 30 second timeout
@@ -116,23 +113,20 @@ class SSHTunnelManager(
                 // Set up remote port forwarding
                 session?.setPortForwardingR(remotePort, localHost, localPort)
 
-                // Update UI state and log on success
                 withContext(Dispatchers.Main) {
                     AAPLog.append("SSH tunnel started successfully")
-                    ConnectionStateHolder.setState(ConnectionState.CONNECTED) // Set state to connected
+                    ConnectionStateHolder.setState(ConnectionState.CONNECTED)
                 }
 
-                // Keep the coroutine alive to maintain the connection
-                // Also implement periodic checks for connection health
                 while (isActive) {
                     if (session?.isConnected != true) {
                         withContext(Dispatchers.Main) {
                             AAPLog.append("SSH connection lost, attempting reconnect...")
-                            ConnectionStateHolder.setState(ConnectionState.CONNECTING) // Set state to connecting
+                            ConnectionStateHolder.setState(ConnectionState.CONNECTING)
                         }
                         reconnect()
                     }
-                    delay(30000) // Check every 30 seconds
+                    delay(30000)
                 }
             } catch (e: JSchException) {
                 withContext(Dispatchers.Main) {
@@ -144,13 +138,14 @@ class SSHTunnelManager(
                     } else {
                         AAPLog.append("SSH tunnel failed: ${e.message}")
                         // Log the actual config being used
-                        val configDump = config.entries.joinToString("\n") { "${it.key}=${it.value}" }
+                        val cfg = connectConfig
+                        val configDump = cfg?.entries?.joinToString("\n") { "${it.key}=${it.value}" } ?: "No config available"
                         AAPLog.append("Current SSH config:\n$configDump")
                         // Log available algorithms
                         try {
-                            val availableAlgorithms = session?.config?.let { cfg ->
+                            val availableAlgorithms = session?.config?.let { sCfg ->
                                 listOf("kex", "server_host_key", "cipher.s2c", "cipher.c2s", "mac.s2c", "mac.c2s")
-                                    .joinToString("\n") { alg -> "$alg=${cfg[alg]}" }
+                                    .joinToString("\n") { alg -> "$alg=${sCfg[alg]}" }
                             } ?: "No session config available"
                             AAPLog.append("Available algorithms:\n$availableAlgorithms")
                         } catch (e: Exception) {
@@ -172,34 +167,28 @@ class SSHTunnelManager(
 
     private suspend fun reconnect() {
         try {
-            // Clean up existing session
             session?.disconnect()
 
-            // Create new session
             val jsch = JSch()
             session = jsch.getSession(sshUser, sshHost, sshPort)
             session?.setPassword(sshPassword)
 
-            val config = Properties()
             val storedKey = prefs.getString(SERVER_KEY, null)
-
-            if (storedKey.isNullOrBlank()) {
-                // If key was cleared or never stored, accept new one
-                config["StrictHostKeyChecking"] = "no"
-                AAPLog.append("No server key found for $sshHost during reconnect. Accepting new key.")
-            } else {
-                // Use stored key for strict checking
-                config["StrictHostKeyChecking"] = "yes"
-                val knownHostsEntry = "$sshHost $storedKey"
-                jsch.setKnownHosts(ByteArrayInputStream(knownHostsEntry.toByteArray()))
-                AAPLog.append("Using stored server key for $sshHost during reconnect: $storedKey")
+            val cfg = Properties().apply {
+                if (storedKey.isNullOrBlank()) {
+                    this["StrictHostKeyChecking"] = "no"
+                    AAPLog.append("No server key found for $sshHost during reconnect. Accepting new key.")
+                } else {
+                    this["StrictHostKeyChecking"] = "yes"
+                    val knownHostsEntry = "$sshHost $storedKey"
+                    jsch.setKnownHosts(ByteArrayInputStream(knownHostsEntry.toByteArray()))
+                    AAPLog.append("Using stored server key for $sshHost during reconnect: $storedKey")
+                }
             }
-            session?.setConfig(config)
+            session?.setConfig(cfg)
 
-            // Connect and set up forwarding again
             session?.connect(30000)
 
-            // If a new key was accepted during reconnect, store it now
             if (storedKey.isNullOrBlank()) {
                 val hostKey = session?.hostKey
                 if (hostKey != null) {
@@ -215,16 +204,15 @@ class SSHTunnelManager(
 
             withContext(Dispatchers.Main) {
                 AAPLog.append("SSH tunnel reconnected successfully")
-                ConnectionStateHolder.setState(ConnectionState.CONNECTED) // Set state to connected
+                ConnectionStateHolder.setState(ConnectionState.CONNECTED)
             }
         } catch (e: Exception) {
             withContext(Dispatchers.Main) {
                 AAPLog.append("Reconnection failed: ${e.message}")
-                ConnectionStateHolder.setState(ConnectionState.DISCONNECTED) // Set state to disconnected on failure
+                ConnectionStateHolder.setState(ConnectionState.DISCONNECTED)
             }
             onError?.invoke("Reconnection failed: ${e.message}")
-            // Wait before trying again
-            delay(5000) // Wait 5 seconds before next reconnect attempt (the while loop will trigger it)
+            delay(5000)
         }
     }
 
@@ -232,28 +220,21 @@ class SSHTunnelManager(
         scope.launch(Dispatchers.IO) {
             try {
                 AAPLog.append("Stopping SSH tunnel...")
-                ConnectionStateHolder.setState(ConnectionState.DISCONNECTING) // Set state to disconnecting
+                ConnectionStateHolder.setState(ConnectionState.DISCONNECTING)
 
-                // Cancel the tunnel monitoring job
                 tunnelJob?.cancel()
                 tunnelJob = null
 
-                // Cancel port forwarding
-                // session?.delPortForwardingR(remotePort) // This might not be necessary if session disconnects
-
-                // Disconnect the session
                 session?.disconnect()
                 session = null
 
                 withContext(Dispatchers.Main) {
                     AAPLog.append("SSH tunnel stopped")
-                    ConnectionStateHolder.setState(ConnectionState.DISCONNECTED) // Set state to disconnected
+                    ConnectionStateHolder.setState(ConnectionState.DISCONNECTED)
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
                     AAPLog.append("Failed to stop SSH tunnel: ${e.message}")
-                    // State might remain DISCONNECTING or go to DISCONNECTED depending on failure
-                    // Let's assume it eventually goes to DISCONNECTED
                     ConnectionStateHolder.setState(ConnectionState.DISCONNECTED)
                 }
                 e.printStackTrace()
@@ -261,9 +242,8 @@ class SSHTunnelManager(
         }
     }
 
-    // Clean up resources when the component is destroyed
     fun destroy() {
-        scope.cancel() // Cancel the coroutine scope
+        scope.cancel()
         session?.disconnect()
         session = null
         AAPLog.append("SSHTunnelManager destroyed")
