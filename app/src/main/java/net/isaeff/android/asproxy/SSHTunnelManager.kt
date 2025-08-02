@@ -2,7 +2,6 @@ package net.isaeff.android.asproxy
 
 import android.content.Context
 import android.content.SharedPreferences
-import android.os.Build
 import com.jcraft.jsch.JSch
 import com.jcraft.jsch.JSchException
 import com.jcraft.jsch.Session
@@ -55,6 +54,22 @@ class SSHTunnelManager(
         }
     }
 
+    private fun configureJschAlgorithms(jsch: JSch) {
+        // Ensure RSA-SHA2 signature support and known mappings exist in this JSch instance.
+        // Some JSch builds may not have these defaults on older Android.
+        try {
+            jsch.setConfig("server_host_key", "ecdsa-sha2-nistp256,rsa-sha2-512,rsa-sha2-256,ssh-rsa")
+            // Map signature names explicitly
+            jsch.setConfig("signature.rsa-sha2-256", "com.jcraft.jsch.jce.SignatureRSA256")
+            jsch.setConfig("signature.rsa-sha2-512", "com.jcraft.jsch.jce.SignatureRSA512")
+            jsch.setConfig("signature.rsa", "com.jcraft.jsch.jce.SignatureRSA")
+            // KEX mappings (leave defaults but ensure availability order is sane)
+            jsch.setConfig("kex", "diffie-hellman-group-exchange-sha256,ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521,diffie-hellman-group14-sha1")
+        } catch (_: Throwable) {
+            // Best-effort; if the class names are not present, keep going with defaults
+        }
+    }
+
     private fun buildProfiles(jsch: JSch, storedKey: String?): List<AlgoProfile> {
         val commonHostKeyProps: (Properties) -> Unit = { p ->
             if (storedKey.isNullOrBlank()) {
@@ -64,7 +79,7 @@ class SSHTunnelManager(
                 val knownHostsEntry = "$sshHost $storedKey"
                 jsch.setKnownHosts(ByteArrayInputStream(knownHostsEntry.toByteArray()))
             }
-            // Avoid failing on newer servers that disable MD5 MACs; list stronger first
+            // Password only; add other methods as needed
             p["PreferredAuthentications"] = "password"
         }
 
@@ -78,6 +93,8 @@ class SSHTunnelManager(
             put("cipher.c2s", "aes256-ctr,aes128-ctr,aes256-cbc,aes128-cbc,3des-ctr,3des-cbc")
             put("mac.s2c", "hmac-sha2-256,hmac-sha1,hmac-md5")
             put("mac.c2s", "hmac-sha2-256,hmac-sha1,hmac-md5")
+            // Explicitly allow rsa-sha2 signatures
+            put("PubkeyAcceptedAlgorithms", "rsa-sha2-512,rsa-sha2-256,ssh-rsa")
             commonHostKeyProps(this)
         }
 
@@ -89,28 +106,31 @@ class SSHTunnelManager(
             put("cipher.c2s", "aes256-ctr,aes128-ctr,aes256-cbc,aes128-cbc,3des-ctr,3des-cbc")
             put("mac.s2c", "hmac-sha2-256,hmac-sha1,hmac-md5")
             put("mac.c2s", "hmac-sha2-256,hmac-sha1,hmac-md5")
+            put("PubkeyAcceptedAlgorithms", "rsa-sha2-512,rsa-sha2-256,ssh-rsa")
             commonHostKeyProps(this)
         }
 
         // Compatibility profile for older Android and servers (no EC, safer than very legacy)
         val compat = Properties().apply {
-            put("kex", "diffie-hellman-group-exchange-sha256,diffie-hellman-group14-sha1")
+            put("kex", "diffie-hellman-group14-sha1,diffie-hellman-group-exchange-sha256")
             put("server_host_key", "rsa-sha2-256,ssh-rsa")
             put("cipher.s2c", "aes128-ctr,aes256-ctr,3des-ctr,aes128-cbc,3des-cbc")
             put("cipher.c2s", "aes128-ctr,aes256-ctr,3des-ctr,aes128-cbc,3des-cbc")
-            put("mac.s2c", "hmac-sha2-256,hmac-sha1")
-            put("mac.c2s", "hmac-sha2-256,hmac-sha1")
+            put("mac.s2c", "hmac-sha1,hmac-sha2-256")
+            put("mac.c2s", "hmac-sha1,hmac-sha2-256")
+            put("PubkeyAcceptedAlgorithms", "rsa-sha2-256,ssh-rsa")
             commonHostKeyProps(this)
         }
 
         // Very legacy catch-all (use only if needed)
         val legacy = Properties().apply {
             put("kex", "diffie-hellman-group14-sha1,diffie-hellman-group1-sha1")
-            put("server_host_key", "ssh-rsa") // Prefer to avoid ssh-dss
+            put("server_host_key", "ssh-rsa") // Avoid ssh-dss
             put("cipher.s2c", "aes128-ctr,aes128-cbc,3des-ctr,3des-cbc")
             put("cipher.c2s", "aes128-ctr,aes128-cbc,3des-ctr,3des-cbc")
             put("mac.s2c", "hmac-sha1")
             put("mac.c2s", "hmac-sha1")
+            put("PubkeyAcceptedAlgorithms", "ssh-rsa")
             commonHostKeyProps(this)
         }
 
@@ -148,13 +168,25 @@ class SSHTunnelManager(
             // ignore - likely not set
         }
 
+        // Attempt to clear possible host-bound entries too
+        listOf("127.0.0.1", "localhost", "0.0.0.0", "::").forEach { host ->
+            try {
+                sess.delPortForwardingR("$host:$remotePort")
+                AAPLog.append("Cleared existing remote port forwarding on $host:$remotePort (if any)")
+            } catch (_: Throwable) { }
+        }
+
         val bindCandidates = listOf(
-            "127.0.0.1",
             "localhost",
-            // Empty host lets server default decide; some sshd configs accept this
+            "127.0.0.1",
+            // IPv6 localhost
+            "::1",
+            // Empty host lets server default decide
             "",
             // As a last resort (requires GatewayPorts clientspecified or yes):
-            "0.0.0.0"
+            "0.0.0.0",
+            // IPv6 any
+            "::"
         )
 
         var lastError: Throwable? = null
@@ -172,17 +204,14 @@ class SSHTunnelManager(
             } catch (e: Throwable) {
                 lastError = e
                 AAPLog.append("Remote forward failed for bind '${if (bind.isEmpty()) "default" else bind}': ${e.message}")
-                // If it's "address already in use", try to delete and retry once
-                if (e.message?.contains("administratively prohibited") == true ||
-                    e.message?.contains("remote port forwarding failed") == true ||
-                    e.message?.contains("address already in use") == true
+                // Try to delete and retry once on common messages
+                if (e.message?.contains("administratively prohibited", ignoreCase = true) == true ||
+                    e.message?.contains("remote port forwarding failed", ignoreCase = true) == true ||
+                    e.message?.contains("address already in use", ignoreCase = true) == true
                 ) {
-                    try {
-                        sess.delPortForwardingR(remotePort)
-                        AAPLog.append("Attempted to clear remote forwarding after failure; retrying...")
-                    } catch (_: Throwable) {
-                        // ignore
-                    }
+                    try { sess.delPortForwardingR(remotePort) } catch (_: Throwable) {}
+                    try { if (bind.isNotEmpty()) sess.delPortForwardingR("$bind:$remotePort") } catch (_: Throwable) {}
+                    AAPLog.append("Attempted to clear remote forwarding after failure; will try next candidate...")
                 }
             }
         }
@@ -200,6 +229,7 @@ class SSHTunnelManager(
                 ConnectionStateHolder.setState(ConnectionState.CONNECTING)
 
                 val jsch = JSch()
+                configureJschAlgorithms(jsch)
                 // For key-based authentication:
                 // jsch.addIdentity("/path/to/private/key")
 
@@ -294,6 +324,7 @@ class SSHTunnelManager(
             session?.disconnect()
 
             val jsch = JSch()
+            configureJschAlgorithms(jsch)
             val storedKey = prefs.getString(SERVER_KEY, null)
             val profiles = buildProfiles(jsch, storedKey)
 
@@ -368,6 +399,10 @@ class SSHTunnelManager(
                     session?.delPortForwardingR(remotePort)
                 } catch (_: Throwable) {
                     // ignore
+                }
+                // Attempt to clean bound entries too
+                listOf("127.0.0.1", "localhost", "0.0.0.0", "::", "::1").forEach { host ->
+                    try { session?.delPortForwardingR("$host:$remotePort") } catch (_: Throwable) {}
                 }
 
                 session?.disconnect()
