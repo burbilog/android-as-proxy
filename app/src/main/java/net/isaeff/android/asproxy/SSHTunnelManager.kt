@@ -2,6 +2,7 @@ package net.isaeff.android.asproxy
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.os.Build
 import com.jcraft.jsch.JSch
 import com.jcraft.jsch.JSchException
 import com.jcraft.jsch.Session
@@ -59,11 +60,11 @@ class SSHTunnelManager(
         // Use static JSch.setConfig for broad compatibility across JSch variants.
         try {
             JSch.setConfig("server_host_key", "ecdsa-sha2-nistp256,rsa-sha2-512,rsa-sha2-256,ssh-rsa")
-            // Map signature names explicitly
+            // Map signature names explicitly (best-effort)
             JSch.setConfig("signature.rsa-sha2-256", "com.jcraft.jsch.jce.SignatureRSA256")
             JSch.setConfig("signature.rsa-sha2-512", "com.jcraft.jsch.jce.SignatureRSA512")
             JSch.setConfig("signature.rsa", "com.jcraft.jsch.jce.SignatureRSA")
-            // KEX mappings (leave defaults but ensure availability order is sane)
+            // KEX mappings (keep defaults sensible)
             JSch.setConfig("kex", "diffie-hellman-group-exchange-sha256,ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521,diffie-hellman-group14-sha1")
         } catch (_: Throwable) {
             // Best-effort; if the class names are not present, keep going with defaults
@@ -84,6 +85,7 @@ class SSHTunnelManager(
         }
 
         val supportsEC = ecAlgorithmsAvailable()
+        val isApi24 = Build.VERSION.SDK_INT <= Build.VERSION_CODES.N // API 24/25
 
         // Modern EC-first profile (only if EC available)
         val modern = Properties().apply {
@@ -101,6 +103,7 @@ class SSHTunnelManager(
         // RSA-centric profile without EC
         val rsaCentric = Properties().apply {
             put("kex", "diffie-hellman-group-exchange-sha256,diffie-hellman-group14-sha1")
+            // Prefer SHA-2 when available, but keep ssh-rsa for compatibility
             put("server_host_key", "rsa-sha2-512,rsa-sha2-256,ssh-rsa")
             put("cipher.s2c", "aes256-ctr,aes128-ctr,aes256-cbc,aes128-cbc,3des-ctr,3des-cbc")
             put("cipher.c2s", "aes256-ctr,aes128-ctr,aes256-cbc,aes128-cbc,3des-ctr,3des-cbc")
@@ -110,15 +113,29 @@ class SSHTunnelManager(
             commonHostKeyProps(this)
         }
 
-        // Compatibility profile for older Android and servers (no EC, safer than very legacy)
+        // Compatibility profile for older Android and servers (no EC, safe-ish)
         val compat = Properties().apply {
             put("kex", "diffie-hellman-group14-sha1,diffie-hellman-group-exchange-sha256")
-            put("server_host_key", "rsa-sha2-256,ssh-rsa")
+            // Important: force ssh-rsa first to avoid rsa-sha2 verification on API 24 emulator
+            put("server_host_key", "ssh-rsa,rsa-sha2-256")
             put("cipher.s2c", "aes128-ctr,aes256-ctr,3des-ctr,aes128-cbc,3des-cbc")
             put("cipher.c2s", "aes128-ctr,aes256-ctr,3des-ctr,aes128-cbc,3des-cbc")
             put("mac.s2c", "hmac-sha1,hmac-sha2-256")
             put("mac.c2s", "hmac-sha1,hmac-sha2-256")
-            put("PubkeyAcceptedAlgorithms", "rsa-sha2-256,ssh-rsa")
+            put("PubkeyAcceptedAlgorithms", "ssh-rsa,rsa-sha2-256")
+            commonHostKeyProps(this)
+        }
+
+        // API 24-focused minimal profile to avoid verify:false on emulator
+        val api24 = Properties().apply {
+            // Keep to algorithms most likely supported/verified on Android 7 emulator
+            put("kex", "diffie-hellman-group14-sha1")
+            put("server_host_key", "ssh-rsa")
+            put("cipher.s2c", "aes128-ctr,aes128-cbc,3des-ctr,3des-cbc")
+            put("cipher.c2s", "aes128-ctr,aes128-cbc,3des-ctr,3des-cbc")
+            put("mac.s2c", "hmac-sha1")
+            put("mac.c2s", "hmac-sha1")
+            put("PubkeyAcceptedAlgorithms", "ssh-rsa")
             commonHostKeyProps(this)
         }
 
@@ -136,17 +153,24 @@ class SSHTunnelManager(
 
         val profiles = mutableListOf<AlgoProfile>()
         val last = prefs.getString(PREF_WORKING_PROFILE, null)
+
+        // Construct ordered list
         val all = buildList {
             if (supportsEC) add(AlgoProfile("modern", "Modern EC + RSA", modern))
+            // On API 24/25, prefer the api24 minimal profile first
+            if (isApi24) add(AlgoProfile("api24", "API24 minimal (ssh-rsa only)", api24))
             add(AlgoProfile("rsa", "RSA-centric", rsaCentric))
             add(AlgoProfile("compat", "Compatibility (no EC, safe)", compat))
             add(AlgoProfile("legacy", "Legacy compatibility", legacy))
         }
+
+        // If we previously recorded a working profile, try it first
         if (last != null) {
             val preferred = all.find { it.key == last }
             if (preferred != null) profiles.add(preferred)
         }
         all.forEach { if (profiles.none { p -> p.key == it.key }) profiles.add(it) }
+
         return profiles
     }
 
@@ -357,6 +381,7 @@ class SSHTunnelManager(
                 if (hostKey != null) {
                     val keyString = "${hostKey.type} ${hostKey.key}"
                     prefs.edit().putString(SERVER_KEY, keyString).apply()
+                    AAPLog.append("Stored new server key for $sshHost during reconnect: $keyString")
                 } else {
                     AAPLog.append("Warning: No host key received after reconnect for $sshHost.")
                 }
