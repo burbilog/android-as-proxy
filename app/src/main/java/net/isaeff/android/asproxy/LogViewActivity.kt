@@ -19,6 +19,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -44,6 +46,7 @@ class LogViewActivity : ComponentActivity() {
 fun LogViewScreen() {
     val context = LocalContext.current
     var logText by remember { mutableStateOf(AAPLog.getLog()) }
+    var showReportDialog by remember { mutableStateOf(false) }
 
     val listener = remember {
         {
@@ -107,6 +110,30 @@ fun LogViewScreen() {
                 ) {
                     Text("Share")
                 }
+                Button(
+                    onClick = { showReportDialog = true },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Report")
+                }
+            }
+            if (showReportDialog) {
+                AlertDialog(
+                    onDismissRequest = { showReportDialog = false },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                showReportDialog = false
+                                EmailSender.sendAsync(logText)
+                            }
+                        ) { Text("Send") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showReportDialog = false }) { Text("Cancel") }
+                    },
+                    title = { Text("Send report") },
+                    text = { Text("Send log to app maintainer?") }
+                )
             }
         }
     }

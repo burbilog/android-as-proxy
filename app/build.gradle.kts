@@ -37,14 +37,25 @@ android {
     buildFeatures {
         compose = true
     }
+    // Resolve duplicate NOTICE.md from JavaMail jars
+    packaging {
+        resources {
+            pickFirsts += setOf(
+                "META-INF/NOTICE.md",
+                "META-INF/LICENSE.md"
+            )
+        }
+    }
 }
 
 dependencies {
-
-
-
-
-    implementation(libs.jsch)
+ 
+ 
+ 
+ 
+     implementation(libs.jsch)
+     implementation(libs.android.mail)
+     implementation(libs.android.activation)
     implementation(libs.java.socks.proxy.server)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
