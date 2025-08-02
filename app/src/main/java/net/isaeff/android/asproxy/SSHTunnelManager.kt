@@ -2,7 +2,6 @@ package net.isaeff.android.asproxy
 
 import android.content.Context
 import android.content.SharedPreferences
-import android.os.Build
 import com.jcraft.jsch.JSch
 import com.jcraft.jsch.JSchException
 import com.jcraft.jsch.Session
@@ -198,20 +197,10 @@ class SSHTunnelManager(
                         onError?.invoke("Server key changed! Potential security issue. Clear key to accept new.")
                     } else {
                         AAPLog.append("SSH tunnel failed: ${e.message}")
-                        // Log the actual config being used
+                        // Log the actual config being used to help debug
                         val cfg = connectConfig
                         val configDump = cfg?.entries?.joinToString("\n") { "${it.key}=${it.value}" } ?: "No config available"
                         AAPLog.append("Current SSH config:\n$configDump")
-                        // Log available algorithms
-                        try {
-                            val availableAlgorithms = session?.config?.let { sCfg ->
-                                listOf("kex", "server_host_key", "cipher.s2c", "cipher.c2s", "mac.s2c", "mac.c2s")
-                                    .joinToString("\n") { alg -> "$alg=${sCfg[alg]}" }
-                            } ?: "No session config available"
-                            AAPLog.append("Available algorithms:\n$availableAlgorithms")
-                        } catch (e: Exception) {
-                            AAPLog.append("Failed to get available algorithms: ${e.message}")
-                        }
                     }
                     ConnectionStateHolder.setState(ConnectionState.DISCONNECTED)
                 }
