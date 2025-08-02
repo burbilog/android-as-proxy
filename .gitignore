@@ -18,3 +18,4 @@ local.properties
 .swp
 .idea/deploymentTargetSelector.xml
 .kotlin/
+.vscode/
