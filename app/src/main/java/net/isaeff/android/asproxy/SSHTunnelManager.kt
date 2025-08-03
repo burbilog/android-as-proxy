@@ -336,6 +336,7 @@ class SSHTunnelManager(
                         val cfg = connectConfig
                         val configDump = cfg?.entries?.joinToString("\n") { "${it.key}=${it.value}" } ?: "No config available"
                         AAPLog.append("Current SSH config:\n$configDump")
+                        onError?.invoke("SSH tunnel failed: ${e.message}")
                     }
                     ConnectionStateHolder.setState(ConnectionState.DISCONNECTED)
                 }

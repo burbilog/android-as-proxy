@@ -30,15 +30,12 @@ class SocksForegroundService : Service() {
     private var trafficJob: Job? = null
 
     // Retry mechanism
-    private var shouldRetryOnFailure = false
-    private var retryConnectionParams: Intent? = null
     private var isManualStop = false
 
     companion object {
-        private const val RETRY_DELAY_MS = 30_000L // 30 seconds
         private const val ACTION_RETRY_CONNECTION = "net.isaeff.android.asproxy.action.RETRY_CONNECTION"
-        
-        fun scheduleRetry(context: Context, connectionParams: Intent) {
+
+        fun scheduleRetry(context: Context, connectionParams: Intent, timeoutSeconds: Int) {
             val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
             val retryIntent = Intent(ACTION_RETRY_CONNECTION).apply {
                 setPackage(context.packageName)
@@ -50,11 +47,11 @@ class SocksForegroundService : Service() {
                 retryIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
-            
-            val triggerTime = System.currentTimeMillis() + RETRY_DELAY_MS
+
+            val triggerTime = System.currentTimeMillis() + timeoutSeconds * 1000L
             try {
                 alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
-                AAPLog.append("Scheduled connection retry in 30 seconds via BroadcastReceiver")
+                AAPLog.append("Scheduled connection retry in $timeoutSeconds seconds via BroadcastReceiver")
             } catch (e: Exception) {
                 AAPLog.append("Failed to schedule retry: ${e.message}")
             }
@@ -78,7 +75,6 @@ class SocksForegroundService : Service() {
         // Handle stop action from notification swipe or explicit stop
         if (intent?.action == ACTION_STOP_SERVICE) {
             AAPLog.append("Stop action received from notification")
-            shouldRetryOnFailure = false // Disable retry on explicit stop
             isManualStop = true
             stopSelf()
             return START_NOT_STICKY
@@ -89,40 +85,56 @@ class SocksForegroundService : Service() {
             AAPLog.append("Retry connection action received")
         }
 
-        // Extract parameters from intent
-        val sshServer = intent?.getStringExtra("ssh_server") ?: run {
-            AAPLog.append("Error: SSH server parameter missing")
-            ConnectionStateHolder.setState(ConnectionState.DISCONNECTED)
-            stopSelf()
-            return START_NOT_STICKY
-        }
-        val remotePort = intent.getIntExtra("remote_port", -1).takeIf { it != -1 } ?: run {
-            AAPLog.append("Error: Remote port parameter missing or invalid")
-            ConnectionStateHolder.setState(ConnectionState.DISCONNECTED)
-            stopSelf()
-            return START_NOT_STICKY
-        }
-        val username = intent.getStringExtra("username") ?: run {
-            AAPLog.append("Error: Username parameter missing")
-            ConnectionStateHolder.setState(ConnectionState.DISCONNECTED)
-            stopSelf()
-            return START_NOT_STICKY
-        }
-        val password = intent.getStringExtra("password") ?: run {
-            AAPLog.append("Error: Password parameter missing")
-            ConnectionStateHolder.setState(ConnectionState.DISCONNECTED)
-            stopSelf()
-            return START_NOT_STICKY
+        val sshServer: String
+        val remotePort: Int
+        val username: String
+        val password: String
+
+        if (intent?.action == "net.isaeff.android.asproxy.action.AUTO_CONNECT_ON_BOOT") {
+            AAPLog.append("Auto-connect action received from BootCompletedReceiver")
+            val prefs = getSharedPreferences("aap_prefs", Context.MODE_PRIVATE)
+            if (!prefs.getBoolean("auto_connect", false)) {
+                AAPLog.append("Auto-connect is disabled, stopping service.")
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            sshServer = prefs.getString("ssh_server", "") ?: ""
+            remotePort = (prefs.getString("remote_port", "0") ?: "0").toInt()
+            username = prefs.getString("username", "") ?: ""
+            password = prefs.getString("password", "") ?: ""
+
+            if (sshServer.isBlank() || remotePort == 0 || username.isBlank() || password.isBlank()) {
+                AAPLog.append("Required preferences are missing, stopping service.")
+                stopSelf()
+                return START_NOT_STICKY
+            }
+        } else {
+             sshServer = intent?.getStringExtra("ssh_server") ?: run {
+                AAPLog.append("Error: SSH server parameter missing")
+                ConnectionStateHolder.setState(ConnectionState.DISCONNECTED)
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            remotePort = intent.getIntExtra("remote_port", -1).takeIf { it != -1 } ?: run {
+                AAPLog.append("Error: Remote port parameter missing or invalid")
+                ConnectionStateHolder.setState(ConnectionState.DISCONNECTED)
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            username = intent.getStringExtra("username") ?: run {
+                AAPLog.append("Error: Username parameter missing")
+                ConnectionStateHolder.setState(ConnectionState.DISCONNECTED)
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            password = intent.getStringExtra("password") ?: run {
+                AAPLog.append("Error: Password parameter missing")
+                ConnectionStateHolder.setState(ConnectionState.DISCONNECTED)
+                stopSelf()
+                return START_NOT_STICKY
+            }
         }
 
-        // Store connection parameters for potential retry
-        retryConnectionParams = Intent().apply {
-            putExtra("ssh_server", sshServer)
-            putExtra("remote_port", remotePort)
-            putExtra("username", username)
-            putExtra("password", password)
-        }
-        shouldRetryOnFailure = true // Enable retry mechanism
         isManualStop = false // Reset manual stop flag
 
         // Create notification first
@@ -164,24 +176,24 @@ class SocksForegroundService : Service() {
         ).apply {
             onError = { errorMessage ->
                 AAPLog.append("SSH connection failed: $errorMessage")
-                // SSHTunnelManager already sets state to DISCONNECTED on error
-                
-                // Schedule retry if enabled
-                if (shouldRetryOnFailure && retryConnectionParams != null) {
-                    AAPLog.append("Scheduling connection retry in 30 seconds")
-                    scheduleRetry(applicationContext, retryConnectionParams!!)
+                val prefs = getSharedPreferences("aap_prefs", Context.MODE_PRIVATE)
+                val autoRetry = prefs.getBoolean("auto_retry_on_failure", true)
+                val timeout = prefs.getString("retry_timeout_seconds", "30")?.toIntOrNull() ?: 30
+
+                if (autoRetry && !isManualStop) {
+                    val retryConnectionParams = Intent().apply {
+                        putExtra("ssh_server", sshServer)
+                        putExtra("remote_port", remotePort)
+                        putExtra("username", username)
+                        putExtra("password", password)
+                    }
+                    AAPLog.append("Scheduling connection retry in $timeout seconds")
+                    scheduleRetry(applicationContext, retryConnectionParams, timeout)
                 }
-                
+
                 stopSelf() // Stop the service if SSH fails
-                
-                // Show error toast
-                android.os.Handler(mainLooper).post {
-                    android.widget.Toast.makeText(
-                        this@SocksForegroundService, // Use service context
-                        "SSH connection failed, retrying in 30s",
-                        android.widget.Toast.LENGTH_LONG
-                    ).show()
-                }
+
+                // Don't show a toast here. onDestroy will handle it.
             }
             startSSHTunnel()
             AAPLog.append("SFS: SSH tunnel start requested")
@@ -195,9 +207,24 @@ class SocksForegroundService : Service() {
             AAPLog.append("Socks proxy started on local port 1080")
         } catch (e: Exception) {
             AAPLog.append("Error starting socks proxy: ${e.message}")
-            // If SOCKS fails, stop everything
-            sshTunnelManager?.stopSSHTunnel() // Stop SSH tunnel if it started
+            // If SOCKS fails, stop everything and maybe retry
+            sshTunnelManager?.stopSSHTunnel()
             ConnectionStateHolder.setState(ConnectionState.DISCONNECTED)
+
+            val prefs = getSharedPreferences("aap_prefs", Context.MODE_PRIVATE)
+            val autoRetry = prefs.getBoolean("auto_retry_on_failure", true)
+            val timeout = prefs.getString("retry_timeout_seconds", "30")?.toIntOrNull() ?: 30
+            if (autoRetry && !isManualStop) {
+                val retryConnectionParams = Intent().apply {
+                    putExtra("ssh_server", sshServer)
+                    putExtra("remote_port", remotePort)
+                    putExtra("username", username)
+                    putExtra("password", password)
+                }
+                AAPLog.append("Scheduling connection retry in $timeout seconds (JOCKS fail)")
+                scheduleRetry(applicationContext, retryConnectionParams, timeout)
+            }
+
             stopSelf()
             return START_NOT_STICKY
         }
@@ -235,8 +262,11 @@ class SocksForegroundService : Service() {
 
         // Show appropriate toast message
         android.os.Handler(mainLooper).post {
-            val message = if (shouldRetryOnFailure && retryConnectionParams != null && !isManualStop) {
-                "Connection failed, retrying in 30s"
+            val prefs = getSharedPreferences("aap_prefs", Context.MODE_PRIVATE)
+            val autoRetry = prefs.getBoolean("auto_retry_on_failure", true)
+            val timeout = prefs.getString("retry_timeout_seconds", "30")?.toIntOrNull() ?: 30
+            val message = if (autoRetry && !isManualStop) {
+                "Connection failed, retrying in ${timeout}s"
             } else {
                 "SOCKS proxy is stopped"
             }

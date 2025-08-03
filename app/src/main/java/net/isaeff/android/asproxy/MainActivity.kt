@@ -69,6 +69,7 @@ class MainActivity : ComponentActivity() {
                 MainScreen()
             }
         }
+        runMigrations()
         val packageInfo: PackageInfo = applicationContext
             .packageManager
             .getPackageInfo(applicationContext.packageName, 0)
@@ -78,6 +79,21 @@ class MainActivity : ComponentActivity() {
         val arch = System.getProperty("os.arch")
         AAPLog.append("AAP version $versionName running on Android $osVer ($arch)")
 
+    }
+
+    private fun runMigrations() {
+        val prefs = getSharedPreferences("aap_prefs", Context.MODE_PRIVATE)
+        with(prefs.edit()) {
+            if (!prefs.contains("auto_retry_on_failure")) {
+                putBoolean("auto_retry_on_failure", true)
+                AAPLog.append("Migration: Set auto_retry_on_failure to default (true)")
+            }
+            if (!prefs.contains("retry_timeout_seconds")) {
+                putString("retry_timeout_seconds", "30")
+                AAPLog.append("Migration: Set retry_timeout_seconds to default (30)")
+            }
+            apply()
+        }
     }
 
     companion object {
@@ -112,6 +128,8 @@ fun MainScreen() {
     var storeServerKeyChecked by rememberSaveable { mutableStateOf(false) }
     // Auto-connect preference; enabled by default on first launch
     var autoConnectChecked by rememberSaveable { mutableStateOf(true) }
+    var autoRetryChecked by rememberSaveable { mutableStateOf(true) }
+    var retryTimeout by rememberSaveable { mutableStateOf("30") }
     var showClearKeyDialog by rememberSaveable { mutableStateOf(false) }
 
     // Observe the connection state from the shared holder
@@ -135,6 +153,8 @@ fun MainScreen() {
 
         // Load auto-connect preference (default true on first start)
         autoConnectChecked = prefs.getBoolean("auto_connect", true)
+        autoRetryChecked = prefs.getBoolean("auto_retry_on_failure", true)
+        retryTimeout = prefs.getString("retry_timeout_seconds", "30") ?: "30"
     }
 
     // Listen for changes to SharedPreferences, specifically the "server_key"
@@ -159,7 +179,8 @@ fun MainScreen() {
 
     val scrollState = rememberScrollState()
     val isFormValid = sshServer.isNotBlank() && remotePort.isNotBlank() &&
-            username.isNotBlank() && password.isNotBlank() && remotePort.all { it.isDigit() } // Added digit check for remotePort
+            username.isNotBlank() && password.isNotBlank() && remotePort.all { it.isDigit() } &&
+            (!autoRetryChecked || (retryTimeout.toIntOrNull() ?: 0) > 0)
 
     // Notification permission launcher
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
@@ -343,6 +364,48 @@ fun MainScreen() {
                     )
                     Text("Enable auto-connect on system boot")
                 }
+
+                // Checkbox for auto-retry on failure
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Checkbox(
+                        checked = autoRetryChecked,
+                        onCheckedChange = { newValue ->
+                            autoRetryChecked = newValue
+                            with(prefs.edit()) {
+                                putBoolean("auto_retry_on_failure", newValue)
+                                apply()
+                            }
+                        },
+                        enabled = connectionState == ConnectionState.DISCONNECTED
+                    )
+                    Text("Auto-retry on failure")
+                }
+
+                // Timeout Input for auto-retry
+                OutlinedTextField(
+                    value = retryTimeout,
+                    onValueChange = { newValue ->
+                        if (newValue.all { it.isDigit() }) {
+                            retryTimeout = newValue
+                            with(prefs.edit()) {
+                                putString("retry_timeout_seconds", newValue)
+                                apply()
+                            }
+                        }
+                    },
+                    label = { Text("Timeout (seconds)") },
+                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Number,
+                        imeAction = ImeAction.Done
+                    ),
+                    enabled = autoRetryChecked && connectionState == ConnectionState.DISCONNECTED,
+                    supportingText = { if (autoRetryChecked && (retryTimeout.toIntOrNull() ?: 0) <= 0) Text("Must be a positive number") },
+                    isError = autoRetryChecked && (retryTimeout.toIntOrNull() ?: 0) <= 0
+                )
 
                 // Dialog for clearing host key
                 if (showClearKeyDialog) {
