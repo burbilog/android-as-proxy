@@ -1,7 +1,7 @@
 # Android As Proxy (AAP)
 
 Cross-border Internet made simple. **Android As Proxy (AAP)** turns any spare Android phone into an always-on SOCKS 5 gateway reachable from anywhere by using secure SSH *remote* port forwarding. Place the device in the country whose online services you need, give it to a relative, or rent a hosted phone — AAP makes all traffic that arrives to the SSH server emerge from that handset as if you were physically there. Ideal for listening to geo-restricted radio, streaming region-locked video, accessing ChatGPT or other AI providers blocked in your location, or bypassing state censorship.
-Built entirely in Kotlin and running as a resilient foreground service, the tunnel survives doze mode and poor connectivity.
+Built entirely in Kotlin and running as a resilient foreground service, the tunnel survives doze mode, reboots and poor connectivity.
 
 ### Typical use cases
 - Listen to Japan-only radio while living in Europe
