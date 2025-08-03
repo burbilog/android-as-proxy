@@ -6,8 +6,10 @@ import android.os.Build
 import com.jcraft.jsch.JSch
 import com.jcraft.jsch.JSchException
 import com.jcraft.jsch.Session
+import com.jcraft.jsch.ChannelExec
 import kotlinx.coroutines.*
 import java.io.ByteArrayInputStream
+import java.net.Socket
 import java.security.AlgorithmParameters
 import java.util.Properties
 
@@ -190,8 +192,63 @@ class SSHTunnelManager(
         return s
     }
 
-    private fun setupRemoteForwardingWithFallbacks(sess: Session) {
-        // Ensure any previous forward is cleared first
+    private suspend fun clearStalePortForwardings(sess: Session) {
+        // Multi-strategy approach to clear stale server-side port listeners
+        AAPLog.append("Attempting to clear any stale server-side port listeners on $remotePort...")
+        
+        // Strategy 1: Use netcat/telnet to trigger stale connection cleanup
+        val cleanupCommands = listOf(
+            // Telnet approach (mimics manual fix)
+            "timeout 2 telnet localhost $remotePort < /dev/null 2>/dev/null || true",
+            // Netcat approaches (more reliable on some systems)
+            "timeout 2 nc -w 1 localhost $remotePort < /dev/null 2>/dev/null || true",
+            "timeout 2 nc -z localhost $remotePort 2>/dev/null || true",
+            // Direct connection attempts
+            "timeout 2 bash -c 'exec 3<>/dev/tcp/localhost/$remotePort; exec 3<&-; exec 3>&-' 2>/dev/null || true"
+        )
+        
+        for (cmd in cleanupCommands) {
+            try {
+                val channel = sess.openChannel("exec") as ChannelExec
+                channel.setCommand(cmd)
+                channel.connect(3000)
+                
+                // Brief wait for execution
+                delay(500)
+                
+                if (channel.isConnected) {
+                    channel.disconnect()
+                }
+                AAPLog.append("Executed cleanup command: $cmd")
+                
+                // Small delay between commands
+                delay(200)
+            } catch (e: Throwable) {
+                AAPLog.append("Cleanup command failed (often expected): $cmd - ${e.message}")
+            }
+        }
+        
+        // Strategy 2: Kill any processes listening on the port (aggressive cleanup)
+        try {
+            val killCmd = "pkill -f 'sshd:.*$remotePort' 2>/dev/null || " +
+                         "lsof -ti:$remotePort | xargs -r kill 2>/dev/null || " +
+                         "fuser -k $remotePort/tcp 2>/dev/null || true"
+            
+            val channel = sess.openChannel("exec") as ChannelExec
+            channel.setCommand(killCmd)
+            channel.connect(3000)
+            
+            delay(500)
+            
+            if (channel.isConnected) {
+                channel.disconnect()
+            }
+            AAPLog.append("Executed aggressive port cleanup")
+        } catch (e: Throwable) {
+            AAPLog.append("Aggressive cleanup failed (often expected): ${e.message}")
+        }
+
+        // Strategy 3: Standard JSch cleanup (existing logic)
         try {
             sess.delPortForwardingR(remotePort)
             AAPLog.append("Cleared existing remote port forwarding on $remotePort (if any)")
@@ -200,13 +257,19 @@ class SSHTunnelManager(
         }
 
         // Attempt to clear possible host-bound entries too
-        listOf("127.0.0.1", "localhost", "0.0.0.0", "::").forEach { host ->
+        listOf("127.0.0.1", "localhost", "0.0.0.0", "::", "::1").forEach { host ->
             try {
                 sess.delPortForwardingR(host, remotePort)
                 AAPLog.append("Cleared existing remote port forwarding on $host:$remotePort (if any)")
             } catch (_: Throwable) { }
         }
+        
+        // Give server time to clean up before attempting new forwarding
+        delay(1000)
+        AAPLog.append("Completed stale port forwarding cleanup")
+    }
 
+    private suspend fun setupRemoteForwardingWithFallbacks(sess: Session) {
         val bindCandidates = listOf(
             "localhost",
             "127.0.0.1",
@@ -221,32 +284,72 @@ class SSHTunnelManager(
         )
 
         var lastError: Throwable? = null
-        for (bind in bindCandidates) {
-            try {
-                if (bind.isEmpty()) {
-                    AAPLog.append("Trying remote forward: [default bind] $remotePort -> $localHost:$localPort")
-                    sess.setPortForwardingR(remotePort, localHost, localPort)
-                } else {
-                    AAPLog.append("Trying remote forward: $bind:$remotePort -> $localHost:$localPort")
-                    sess.setPortForwardingR(bind, remotePort, localHost, localPort)
-                }
-                AAPLog.append("Remote port forwarding established on ${if (bind.isEmpty()) "[default]" else bind}:$remotePort")
-                return
-            } catch (e: Throwable) {
-                lastError = e
-                AAPLog.append("Remote forward failed for bind '${if (bind.isEmpty()) "default" else bind}': ${e.message}")
-                // Try to delete and retry once on common messages
-                if (e.message?.contains("administratively prohibited", ignoreCase = true) == true ||
-                    e.message?.contains("remote port forwarding failed", ignoreCase = true) == true ||
-                    e.message?.contains("address already in use", ignoreCase = true) == true
-                ) {
-                    try { sess.delPortForwardingR(remotePort) } catch (_: Throwable) {}
-                    try { if (bind.isNotEmpty()) sess.delPortForwardingR(bind, remotePort) } catch (_: Throwable) {}
-                    AAPLog.append("Attempted to clear remote forwarding after failure; will try next candidate...")
+        
+        // Retry up to 2 times if we hit "address already in use" errors
+        repeat(2) { attempt ->
+            for (bind in bindCandidates) {
+                try {
+                    if (bind.isEmpty()) {
+                        AAPLog.append("Trying remote forward: [default bind] $remotePort -> $localHost:$localPort (attempt ${attempt + 1})")
+                        sess.setPortForwardingR(remotePort, localHost, localPort)
+                    } else {
+                        AAPLog.append("Trying remote forward: $bind:$remotePort -> $localHost:$localPort (attempt ${attempt + 1})")
+                        sess.setPortForwardingR(bind, remotePort, localHost, localPort)
+                    }
+                    AAPLog.append("Remote port forwarding established on ${if (bind.isEmpty()) "[default]" else bind}:$remotePort")
+                    return
+                } catch (e: Throwable) {
+                    lastError = e
+                    AAPLog.append("Remote forward failed for bind '${if (bind.isEmpty()) "default" else bind}': ${e.message}")
+                    
+                    // On "address already in use", try aggressive cleanup and retry
+                    if (e.message?.contains("address already in use", ignoreCase = true) == true && attempt == 0) {
+                        AAPLog.append("Port still in use, attempting emergency cleanup...")
+                        
+                        // Quick emergency cleanup
+                        try {
+                            val killCmd = "timeout 1 telnet localhost $remotePort < /dev/null 2>/dev/null || " +
+                                         "lsof -ti:$remotePort | xargs -r kill -9 2>/dev/null || " +
+                                         "fuser -k $remotePort/tcp 2>/dev/null || true"
+                            
+                            val channel = sess.openChannel("exec") as ChannelExec
+                            channel.setCommand(killCmd)
+                            channel.connect(2000)
+                            delay(300)
+                            if (channel.isConnected) channel.disconnect()
+                            
+                            delay(500) // Give time for cleanup
+                            AAPLog.append("Executed emergency port cleanup")
+                        } catch (_: Throwable) {
+                            AAPLog.append("Emergency cleanup failed, continuing...")
+                        }
+                        
+                        // Try JSch cleanup too
+                        try { sess.delPortForwardingR(remotePort) } catch (_: Throwable) {}
+                        try { if (bind.isNotEmpty()) sess.delPortForwardingR(bind, remotePort) } catch (_: Throwable) {}
+                        
+                        break // Break inner loop to retry with next attempt
+                    }
+                    
+                    // Standard cleanup for other errors
+                    if (e.message?.contains("administratively prohibited", ignoreCase = true) == true ||
+                        e.message?.contains("remote port forwarding failed", ignoreCase = true) == true
+                    ) {
+                        try { sess.delPortForwardingR(remotePort) } catch (_: Throwable) {}
+                        try { if (bind.isNotEmpty()) sess.delPortForwardingR(bind, remotePort) } catch (_: Throwable) {}
+                        AAPLog.append("Attempted to clear remote forwarding after failure; will try next candidate...")
+                    }
                 }
             }
+            
+            // If we reach here and it's not the last attempt, wait before retrying
+            if (attempt == 0) {
+                AAPLog.append("All bind candidates failed on attempt ${attempt + 1}, retrying after delay...")
+                delay(2000)
+            }
         }
-        throw JSchException(lastError?.message ?: "remote port forwarding failed")
+        
+        throw JSchException(lastError?.message ?: "remote port forwarding failed after all attempts")
     }
 
     fun startSSHTunnel() {
@@ -305,8 +408,11 @@ class SSHTunnelManager(
                     AAPLog.append("SSH connected using profile '${it.key}' (${it.desc})")
                 }
 
-                // Set up remote port forwarding with fallbacks
-                session?.let { setupRemoteForwardingWithFallbacks(it) }
+                // Clear any stale port forwardings first, then set up new ones
+                session?.let {
+                    clearStalePortForwardings(it)
+                    setupRemoteForwardingWithFallbacks(it)
+                }
 
                 withContext(Dispatchers.Main) {
                     AAPLog.append("SSH tunnel started successfully")
@@ -401,8 +507,11 @@ class SSHTunnelManager(
                 AAPLog.append("SSH reconnected using profile '${it.key}' (${it.desc})")
             }
 
-            // Re-establish remote port forwarding with fallbacks
-            session?.let { setupRemoteForwardingWithFallbacks(it) }
+            // Clear any stale port forwardings first, then re-establish
+            session?.let {
+                clearStalePortForwardings(it)
+                setupRemoteForwardingWithFallbacks(it)
+            }
 
             withContext(Dispatchers.Main) {
                 AAPLog.append("SSH tunnel reconnected successfully")
