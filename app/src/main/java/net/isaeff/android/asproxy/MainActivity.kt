@@ -360,7 +360,8 @@ fun MainScreen() {
                                 putBoolean("auto_connect", newValue)
                                 apply()
                             }
-                        }
+                        },
+                        enabled = connectionState == ConnectionState.DISCONNECTED
                     )
                     Text("Enable auto-connect on system boot")
                 }
