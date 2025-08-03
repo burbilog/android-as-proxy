@@ -178,6 +178,13 @@ class SSHTunnelManager(
         val s = jsch.getSession(sshUser, sshHost, sshPort)
         s.setPassword(sshPassword)
         s.setConfig(profile.config)
+        // Aggressive keep-alive so stale sessions on server are closed fast
+        // After one missed keep-alive (≈15 s) the server drops the connection,
+        // freeing the remote port before our next boot attempt.
+        try {
+            s.serverAliveInterval = 15_000      // 15 s between keep-alives
+            s.serverAliveCountMax = 1           // disconnect after first failure
+        } catch (_: Throwable) { /* older JSch fallback */ }
         AAPLog.append("Attempting SSH with profile '${profile.key}' (${profile.desc})")
         s.connect(30000)
         return s

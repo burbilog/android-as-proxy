@@ -110,6 +110,8 @@ fun MainScreen() {
     // State for server key preference and checkbox
     var serverKeyPreferenceValue by rememberSaveable { mutableStateOf("") }
     var storeServerKeyChecked by rememberSaveable { mutableStateOf(false) }
+    // Auto-connect preference; enabled by default on first launch
+    var autoConnectChecked by rememberSaveable { mutableStateOf(true) }
     var showClearKeyDialog by rememberSaveable { mutableStateOf(false) }
 
     // Observe the connection state from the shared holder
@@ -130,6 +132,9 @@ fun MainScreen() {
         serverKeyPreferenceValue = prefs.getString("server_key", "") ?: ""
         // Checkbox is checked if no key is stored (meaning we want to store a new one)
         storeServerKeyChecked = serverKeyPreferenceValue.isBlank()
+
+        // Load auto-connect preference (default true on first start)
+        autoConnectChecked = prefs.getBoolean("auto_connect", true)
     }
 
     // Listen for changes to SharedPreferences, specifically the "server_key"
@@ -149,6 +154,8 @@ fun MainScreen() {
             prefs.unregisterOnSharedPreferenceChangeListener(listener)
         }
     }
+
+    // Removed launch-time auto-connect; auto-connect is now handled only by BootCompletedReceiver
 
     val scrollState = rememberScrollState()
     val isFormValid = sshServer.isNotBlank() && remotePort.isNotBlank() &&
@@ -308,25 +315,33 @@ fun MainScreen() {
                                     // If a key exists, prompt to clear it
                                     showClearKeyDialog = true
                                 } else {
-                                    // This case should ideally not be reachable if enabled is set correctly.
-                                    // If it is reached, it means the checkbox was already checked and disabled,
-                                    // and somehow onCheckedChange was triggered.
-                                    // We just ensure the state is consistent.
                                     storeServerKeyChecked = true
                                 }
-                            } else { // User wants to uncheck the box (don't store new key)
-                                // This case is only reachable if serverKeyPreferenceValue.isNotBlank()
-                                // and the checkbox was initially unchecked.
+                            } else { // User wants to uncheck the box
                                 storeServerKeyChecked = false
                             }
                         },
-                        // Checkbox is enabled only if a server key is currently stored AND
-                        // the connection is DISCONNECTED.
-                        // This allows the user to "check" it to clear the stored key.
-                        // If no key is stored, it's checked and disabled.
                         enabled = serverKeyPreferenceValue.isNotBlank() && connectionState == ConnectionState.DISCONNECTED
                     )
                     Text("Store new server key")
+                }
+
+                // Checkbox for auto-connect
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Checkbox(
+                        checked = autoConnectChecked,
+                        onCheckedChange = { newValue ->
+                            autoConnectChecked = newValue
+                            with(prefs.edit()) {
+                                putBoolean("auto_connect", newValue)
+                                apply()
+                            }
+                        }
+                    )
+                    Text("Enable auto-connect on system boot")
                 }
 
                 // Dialog for clearing host key
@@ -419,9 +434,11 @@ fun MainScreen() {
                             }
                             ConnectionState.CONNECTED -> {
                                 MainActivity.aaplog("Attempting to stop SOCKS server")
-                                // Stop the foreground service
-                                val intent = Intent(context, SocksForegroundService::class.java)
-                                context.stopService(intent)
+                                // Stop the foreground service with explicit stop action
+                                val intent = Intent(context, SocksForegroundService::class.java).apply {
+                                    action = "net.isaeff.android.asproxy.action.STOP_SERVICE"
+                                }
+                                context.startService(intent)
                                 // State will be updated by the service (DISCONNECTING -> DISCONNECTED)
                             }
                             else -> {

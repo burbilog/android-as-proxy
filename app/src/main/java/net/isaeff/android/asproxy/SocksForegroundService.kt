@@ -1,10 +1,12 @@
 package net.isaeff.android.asproxy
 
+import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
@@ -27,6 +29,38 @@ class SocksForegroundService : Service() {
     private var baseTx: Long = 0L
     private var trafficJob: Job? = null
 
+    // Retry mechanism
+    private var shouldRetryOnFailure = false
+    private var retryConnectionParams: Intent? = null
+    private var isManualStop = false
+
+    companion object {
+        private const val RETRY_DELAY_MS = 30_000L // 30 seconds
+        private const val ACTION_RETRY_CONNECTION = "net.isaeff.android.asproxy.action.RETRY_CONNECTION"
+        
+        fun scheduleRetry(context: Context, connectionParams: Intent) {
+            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            val retryIntent = Intent(ACTION_RETRY_CONNECTION).apply {
+                setPackage(context.packageName)
+                putExtras(connectionParams)
+            }
+            val pendingIntent = PendingIntent.getBroadcast(
+                context,
+                0,
+                retryIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            
+            val triggerTime = System.currentTimeMillis() + RETRY_DELAY_MS
+            try {
+                alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
+                AAPLog.append("Scheduled connection retry in 30 seconds via BroadcastReceiver")
+            } catch (e: Exception) {
+                AAPLog.append("Failed to schedule retry: ${e.message}")
+            }
+        }
+    }
+
     override fun onBind(intent: Intent?): IBinder? {
         // Not a bound service
         return null
@@ -39,13 +73,20 @@ class SocksForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        AAPLog.append("Service onStartCommand()")
+        AAPLog.append("Service onStartCommand() with action: ${intent?.action}")
 
         // Handle stop action from notification swipe or explicit stop
         if (intent?.action == ACTION_STOP_SERVICE) {
             AAPLog.append("Stop action received from notification")
+            shouldRetryOnFailure = false // Disable retry on explicit stop
+            isManualStop = true
             stopSelf()
             return START_NOT_STICKY
+        }
+
+        // Handle retry connection action
+        if (intent?.action == ACTION_RETRY_CONNECTION) {
+            AAPLog.append("Retry connection action received")
         }
 
         // Extract parameters from intent
@@ -73,6 +114,16 @@ class SocksForegroundService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+
+        // Store connection parameters for potential retry
+        retryConnectionParams = Intent().apply {
+            putExtra("ssh_server", sshServer)
+            putExtra("remote_port", remotePort)
+            putExtra("username", username)
+            putExtra("password", password)
+        }
+        shouldRetryOnFailure = true // Enable retry mechanism
+        isManualStop = false // Reset manual stop flag
 
         // Create notification first
         val notification = createNotification()
@@ -112,14 +163,22 @@ class SocksForegroundService : Service() {
             remotePort = remotePort
         ).apply {
             onError = { errorMessage ->
-                AAPLog.append(errorMessage)
+                AAPLog.append("SSH connection failed: $errorMessage")
                 // SSHTunnelManager already sets state to DISCONNECTED on error
+                
+                // Schedule retry if enabled
+                if (shouldRetryOnFailure && retryConnectionParams != null) {
+                    AAPLog.append("Scheduling connection retry in 30 seconds")
+                    scheduleRetry(applicationContext, retryConnectionParams!!)
+                }
+                
                 stopSelf() // Stop the service if SSH fails
+                
                 // Show error toast
                 android.os.Handler(mainLooper).post {
                     android.widget.Toast.makeText(
                         this@SocksForegroundService, // Use service context
-                        "SSH connection failed, see log",
+                        "SSH connection failed, retrying in 30s",
                         android.widget.Toast.LENGTH_LONG
                     ).show()
                 }
@@ -150,9 +209,11 @@ class SocksForegroundService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         AAPLog.append("Service onDestroy()")
+        
         // Stop traffic monitoring
         trafficJob?.cancel()
         trafficJob = null
+        
         // Stop jsocks proxy
         try {
             stopJsocks()
@@ -172,18 +233,15 @@ class SocksForegroundService : Service() {
         // Update state to disconnected
         ConnectionStateHolder.setState(ConnectionState.DISCONNECTED)
 
-        // Show toast on service stop
+        // Show appropriate toast message
         android.os.Handler(mainLooper).post {
-            android.widget.Toast.makeText(
-                this,
-                "SOCKS proxy is stopped",
-                android.widget.Toast.LENGTH_LONG
-            ).show()
+            val message = if (shouldRetryOnFailure && retryConnectionParams != null && !isManualStop) {
+                "Connection failed, retrying in 30s"
+            } else {
+                "SOCKS proxy is stopped"
+            }
+            android.widget.Toast.makeText(this, message, android.widget.Toast.LENGTH_LONG).show()
         }
-        // Broadcast service stopped event - This is no longer strictly needed for UI update
-        // but might be useful for other components. Keeping it for now.
-        // val intent = Intent("net.isaeff.android.asproxy.SERVICE_STOPPED") // Removed broadcast
-        // sendBroadcast(intent) // Removed broadcast
 
         AAPLog.append("SocksForegroundService stopped")
     }
