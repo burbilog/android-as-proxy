@@ -39,13 +39,6 @@ accept the battery and hardware wear implications.
 4. The proxy itself is implemented by [`SocksForegroundService`](app/src/main/java/net/isaeff/android/asproxy/SocksForegroundService.kt:1) and remains active as a foreground service, satisfying Android background execution limits.  
 5. Status is reflected in a persistent notification and can be consumed by other components through `ConnectionStateHolder`.  
 
-```
-phone ──Wi-Fi/LTE──► SSH server  
-           │remotePort │  
-           ▼           │  
-        SOCKS 5 ◄──────┘
-```
-
 ## Screenshots
 
 *Coming soon – feel free to open a PR with screenshots!*
