@@ -54,7 +54,7 @@ phone ──Wi-Fi/LTE──► SSH server
 
 1. Clone the repo  
 ```bash
-git clone https://github.com/your-username/android-as-proxy.git
+git clone https://github.com/burbilog/android-as-proxy.git
 cd android-as-proxy
 ```
 2. Open the project in **Android Studio Hedgehog** (or newer) or build from CLI:  
